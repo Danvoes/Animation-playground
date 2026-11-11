@@ -5,8 +5,11 @@ It runs entirely in your web browser. There is nothing to install.
 
 ## How to open it
 
-1. Download this project (on GitHub: green **Code** button → **Download ZIP**), then unzip it.
-2. Double-click **`index.html`**. It opens in your web browser.
+**Online:** open **https://danvoes.github.io/Animation-playground/** on any computer, tablet or phone.
+Nothing to download and no account needed. Your projects are saved in your own browser.
+
+**Without internet:** download this project (on GitHub: green **Code** button → **Download ZIP**),
+unzip it, and double-click **`index.html`**.
 
 Use an up-to-date Chrome, Edge, Firefox or Safari.
 
@@ -232,6 +235,4 @@ Firefox (plays in browsers, VLC and on YouTube).
 
 ## Ideas for later
 
-- A gallery of several projects inside the app
 - Exporting animated GIFs or a set of PNG frames
-- Putting the app online with GitHub Pages so it opens from a web address on any device
