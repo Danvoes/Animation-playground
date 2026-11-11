@@ -602,3 +602,24 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
   .topbar > .group:last-child::-webkit-scrollbar { display: none; }
   .topbar > .group:first-child { flex: none; }
 }
+
+/* ============ Palettes ============ */
+.pal-extract { margin: 4px 0 10px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; }
+.pal-extract .segmented { margin-bottom: 8px; }
+.palette { margin-top: 10px; }
+.pal-top { display: flex; align-items: center; gap: 4px; margin-bottom: 5px; }
+.pal-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-top .mini { height: 26px; padding: 0 7px; font-size: 11px; }
+.pal-swatches { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+.pal-swatches button {
+  aspect-ratio: 1; border: 0; border-radius: 6px; padding: 0; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .15); position: relative;
+}
+.pal-swatches .pal-add {
+  background: transparent; box-shadow: inset 0 0 0 1.5px var(--border); color: var(--muted);
+  font-size: 15px; line-height: 1;
+}
+.palette.editing .pal-swatches button:not(.pal-add)::after {
+  content: "×"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 14px; text-shadow: 0 0 3px #000; background: rgba(0, 0, 0, .25); border-radius: 6px;
+}

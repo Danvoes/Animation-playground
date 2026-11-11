@@ -509,6 +509,26 @@
   <div class="panel" id="panel-color" hidden>
     <h2>Color</h2>
     <div id="color-picker"></div>
+    <h2 class="gap">Palettes</h2>
+    <div class="mini-grid">
+      <button class="mini" id="pal-new" title="Start an empty palette, then add colors with +">+ New palette</button>
+      <button class="mini" id="pal-extract-btn" title="Find the main colors in a picture">Palette from picture</button>
+    </div>
+    <div class="pal-extract" id="pal-extract" hidden>
+      <div class="segmented" id="pal-count">
+        <button data-v="6">6 colors</button>
+        <button data-v="8">8 colors</button>
+        <button data-v="12">12 colors</button>
+      </div>
+      <div class="mini-grid three" style="margin-top:0">
+        <button class="mini" id="pal-from-frame" title="Everything you can see on this frame">This frame</button>
+        <button class="mini" id="pal-from-sel" title="Only the selected area">Selection</button>
+        <button class="mini" id="pal-from-file" title="A photo or picture from your device (it isn't added to the drawing)">Picture file…</button>
+      </div>
+      <p class="hint">Finds the main colors and saves them as a new palette. Each one is a color that really appears in the picture.</p>
+      <input type="file" id="pal-file" accept="image/*" hidden>
+    </div>
+    <div id="palette-list"></div>
   </div>
 
   <div id="toast" role="status" aria-live="polite"></div>

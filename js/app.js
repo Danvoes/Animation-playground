@@ -70,7 +70,7 @@
   // ---------------------------------------------------------------------------
   // The project ("document")
   // ---------------------------------------------------------------------------
-  const doc = { layers: [], frames: [], active: null, frame: null, fps: 12, parts: new Map() };
+  const doc = { layers: [], frames: [], active: null, frame: null, fps: 12, parts: new Map(), palettes: [] };
   let layerCounter = 0, layerIds = 0, frameIds = 0;
 
   function newLayer(name) {
@@ -2511,7 +2511,7 @@
     anchor.classList.add('open');
     if (panel.id === 'panel-layers') buildLayerList();
     if (panel.id === 'panel-brush') drawBrushPreviews();
-    if (panel.id === 'panel-color') picker.markPrevious();
+    if (panel.id === 'panel-color') { picker.markPrevious(); buildPalettes(); }
     if (panel.id === 'panel-frame') refreshFramePanel();
     if (panel.id === 'panel-audio') buildAudioList();
     if (panel.id === 'panel-export') { refreshExportPanel(); refreshTimelapseInfo(); }
@@ -2804,6 +2804,7 @@
         } : undefined,
       })),
       parts: [...doc.parts.values()].map((pt) => ({ id: pt.id, name: pt.name, w: pt.canvas.width, h: pt.canvas.height })),
+      palettes: doc.palettes.map((pl) => ({ id: pl.id, name: pl.name, colors: pl.colors.slice() })),
       audio: audioClips.map((c) => ({
         id: c.id, name: c.name, offset: c.offset, skip: c.skip, volume: c.volume, muted: c.muted, type: c.blob.type,
       })),
@@ -2994,6 +2995,14 @@
     doc.layers = layers;
     doc.frames = frames;
     doc.parts = parts;
+    // Color palettes
+    doc.palettes = (Array.isArray(meta.palettes) ? meta.palettes : []).slice(0, MAX_PALETTES).map((pl, i) => ({
+      id: 'c' + (i + 1),
+      name: String((pl && pl.name) || 'Palette').slice(0, 40),
+      colors: (Array.isArray(pl && pl.colors) ? pl.colors : []).map(Color.normalizeHex).filter(Boolean).slice(0, MAX_PAL_COLORS),
+    }));
+    paletteIds = doc.palettes.length;
+    paletteEditing.clear();
     partIds = maxP;
     partsVersion++;
     rigSel = null;
@@ -3905,6 +3914,218 @@
   }
   $('#tl-export').addEventListener('click', exportTimelapse);
   $('#tl-export-btn').addEventListener('click', exportTimelapse);
+
+  // ---------------------------------------------------------------------------
+  // Color palettes: saved sets of colors, and palettes made from pictures
+  // ---------------------------------------------------------------------------
+  const MAX_PALETTES = 30, MAX_PAL_COLORS = 30;
+  let paletteIds = 0, paletteCount = 8;
+  const paletteEditing = new Set(); // palettes showing "tap to remove"
+
+  function palettesChanged() {
+    buildPalettes();
+    scheduleAutosave();
+  }
+  function newPalette(name, colors) {
+    if (doc.palettes.length >= MAX_PALETTES) { toast(`You can keep up to ${MAX_PALETTES} palettes. Delete one first.`); return null; }
+    const pal = { id: 'c' + (++paletteIds), name, colors: colors.slice(0, MAX_PAL_COLORS) };
+    doc.palettes.unshift(pal); // newest at the top
+    palettesChanged();
+    return pal;
+  }
+
+  function buildPalettes() {
+    const list = $('#palette-list');
+    list.innerHTML = '';
+    $('#pal-from-sel').disabled = !selection;
+    $$('#pal-count button').forEach((b) => b.classList.toggle('active', +b.dataset.v === paletteCount));
+    if (!doc.palettes.length) {
+      list.innerHTML = '<p class="hint">No palettes yet. Make one from a picture, or start a new one and add colors with +.</p>';
+      return;
+    }
+    for (const pal of doc.palettes) {
+      const editing = paletteEditing.has(pal.id);
+      const box = document.createElement('div');
+      box.className = 'palette' + (editing ? ' editing' : '');
+      const top = document.createElement('div');
+      top.className = 'pal-top';
+      const name = document.createElement('span');
+      name.className = 'pal-name';
+      name.textContent = pal.name;
+      name.title = pal.name;
+      const mk = (label, title, fn, cls) => {
+        const b = document.createElement('button');
+        b.className = 'mini' + (cls ? ' ' + cls : '');
+        b.textContent = label;
+        b.title = title;
+        b.addEventListener('click', fn);
+        return b;
+      };
+      top.append(name,
+        mk(editing ? 'Done' : 'Edit', editing ? 'Stop removing colors' : 'Tap colors to remove them', () => {
+          if (editing) paletteEditing.delete(pal.id); else paletteEditing.add(pal.id);
+          buildPalettes();
+        }, editing ? 'on' : ''),
+        mk('✎', 'Rename', () => {
+          const n = prompt('Rename this palette:', pal.name);
+          if (n !== null && n.trim()) { pal.name = n.trim().slice(0, 40); palettesChanged(); }
+        }),
+        mk('×', 'Delete this palette', () => {
+          if (!confirm(`Delete the palette "${pal.name}"?`)) return;
+          doc.palettes.splice(doc.palettes.indexOf(pal), 1);
+          paletteEditing.delete(pal.id);
+          palettesChanged();
+        }, 'danger'));
+      const sw = document.createElement('div');
+      sw.className = 'pal-swatches';
+      pal.colors.forEach((hex, i) => {
+        const b = document.createElement('button');
+        b.style.background = hex;
+        b.title = editing ? `Remove ${hex}` : hex;
+        b.addEventListener('click', () => {
+          if (paletteEditing.has(pal.id)) { pal.colors.splice(i, 1); palettesChanged(); return; }
+          picker.setHex(hex);
+          addRecent(hex);
+        });
+        sw.appendChild(b);
+      });
+      if (!editing && pal.colors.length < MAX_PAL_COLORS) {
+        const add = document.createElement('button');
+        add.className = 'pal-add';
+        add.textContent = '+';
+        add.title = 'Add the current color to this palette';
+        add.addEventListener('click', () => {
+          if (pal.colors.includes(state.color)) { toast('That color is already in this palette.'); return; }
+          pal.colors.push(state.color);
+          palettesChanged();
+        });
+        sw.appendChild(add);
+      }
+      box.append(top, sw);
+      list.appendChild(box);
+    }
+  }
+
+  $('#pal-new').addEventListener('click', () => {
+    const name = prompt('Name your new palette:', `Palette ${paletteIds + 1}`);
+    if (name === null) return;
+    const pal = newPalette(name.trim().slice(0, 40) || `Palette ${paletteIds + 1}`, [state.color]);
+    if (pal) toast('New palette started with your current color. Pick more colors and tap + to add them.');
+  });
+  $('#pal-extract-btn').addEventListener('click', () => {
+    $('#pal-extract').hidden = !$('#pal-extract').hidden;
+    $('#pal-extract-btn').classList.toggle('on', !$('#pal-extract').hidden);
+    buildPalettes();
+  });
+  $$('#pal-count button').forEach((b) => b.addEventListener('click', () => { paletteCount = +b.dataset.v; buildPalettes(); }));
+
+  /**
+   * Find the main colors in some pixels (RGBA). Groups similar colors together
+   * (k-means), then uses the real pixel color closest to the middle of each group,
+   * so every color is one that actually appears. Most common colors come first.
+   */
+  function mainColors(data, count) {
+    let px = [];
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3] >= 128) px.push([data[i], data[i + 1], data[i + 2]]);
+    if (!px.length) return [];
+    if (px.length > 15000) {
+      const step = px.length / 15000;
+      px = Array.from({ length: 15000 }, (_, i) => px[Math.floor(i * step)]);
+    }
+    // How different two colors look (green differences stand out most to our eyes).
+    const dist = (a, b) => 2 * (a[0] - b[0]) ** 2 + 4 * (a[1] - b[1]) ** 2 + 3 * (a[2] - b[2]) ** 2;
+    const k = Math.min(count, px.length);
+    // Start with colors that are spread apart (k-means++).
+    const centers = [px[Math.floor(Math.random() * px.length)].slice()];
+    const near = new Float64Array(px.length).fill(Infinity);
+    while (centers.length < k) {
+      let sum = 0;
+      const c = centers[centers.length - 1];
+      for (let i = 0; i < px.length; i++) { near[i] = Math.min(near[i], dist(px[i], c)); sum += near[i]; }
+      if (!sum) break;
+      let r = Math.random() * sum, j = 0;
+      while (j < px.length - 1 && (r -= near[j]) > 0) j++;
+      centers.push(px[j].slice());
+    }
+    const owner = new Int32Array(px.length);
+    for (let it = 0; it < 12; it++) {
+      const acc = centers.map(() => [0, 0, 0, 0]);
+      for (let i = 0; i < px.length; i++) {
+        let best = 0, bd = Infinity;
+        for (let c = 0; c < centers.length; c++) { const d = dist(px[i], centers[c]); if (d < bd) { bd = d; best = c; } }
+        owner[i] = best;
+        const a = acc[best];
+        a[0] += px[i][0]; a[1] += px[i][1]; a[2] += px[i][2]; a[3]++;
+      }
+      centers.forEach((c, i) => { const a = acc[i]; if (a[3]) { c[0] = a[0] / a[3]; c[1] = a[1] / a[3]; c[2] = a[2] / a[3]; } });
+    }
+    // Snap each group to a real color: the one that appears most often (exact for flat
+    // colors), or for photos with no clear winner, the one nearest the group's middle.
+    let groups = centers.map((c, ci) => {
+      let best = null, bd = Infinity, n = 0, topKey = null, top = 0;
+      const counts = new Map();
+      for (let i = 0; i < px.length; i++) {
+        if (owner[i] !== ci) continue;
+        n++;
+        const key = (px[i][0] << 16) | (px[i][1] << 8) | px[i][2];
+        const cnt = (counts.get(key) || 0) + 1;
+        counts.set(key, cnt);
+        if (cnt > top) { top = cnt; topKey = key; }
+        const d = dist(px[i], c);
+        if (d < bd) { bd = d; best = px[i]; }
+      }
+      const color = top >= Math.max(3, n * 0.05) ? [(topKey >> 16) & 255, (topKey >> 8) & 255, topKey & 255] : best;
+      return { color, n };
+    }).filter((g) => g.color && g.n).sort((a, b) => b.n - a.n);
+    // Leave out colors that hardly appear (like the blurry edge between two areas).
+    const big = groups.filter((g) => g.n >= px.length * 0.005);
+    if (big.length >= Math.min(3, groups.length)) groups = big;
+    const out = [];
+    for (const g of groups) if (!out.some((o) => dist(o, g.color) < 300)) out.push(g.color);
+    return out.map((c) => Color.rgbToHex(c[0], c[1], c[2]));
+  }
+
+  // Shrink a picture to a quick-to-check size and read its pixels.
+  function samplePixels(src, w, h) {
+    const k = Math.min(1, 320 / Math.max(w, h));
+    const c = makeCanvas(Math.max(1, Math.round(w * k)), Math.max(1, Math.round(h * k)));
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false; // keep real pixel colors (no blending while shrinking)
+    g.drawImage(src, 0, 0, c.width, c.height);
+    return g.getImageData(0, 0, c.width, c.height).data;
+  }
+  function paletteFromPixels(data, name) {
+    const colors = mainColors(data, paletteCount);
+    if (!colors.length) { toast('There are no colors there yet. Draw or add a picture first.'); return; }
+    const pal = newPalette(name, colors);
+    if (pal) toast(`Made "${pal.name}" with ${colors.length} colors. Tap a color to use it.`);
+  }
+  $('#pal-from-frame').addEventListener('click', () => {
+    // Everything visible on this frame, without the white paper.
+    drawFrame(fctx, doc.frame, { transparent: true });
+    paletteFromPixels(samplePixels(fillCanvas, DOC_W, DOC_H), `Frame ${frameIndex() + 1} colors`);
+  });
+  $('#pal-from-sel').addEventListener('click', () => {
+    if (!selection) { toast('Select an area first with the Select tool.'); return; }
+    drawFrame(fctx, doc.frame, { transparent: true });
+    fctx.globalCompositeOperation = 'destination-in';
+    fctx.drawImage(selection.mask, 0, 0);
+    fctx.globalCompositeOperation = 'source-over';
+    paletteFromPixels(samplePixels(fillCanvas, DOC_W, DOC_H), 'Selection colors');
+  });
+  $('#pal-from-file').addEventListener('click', () => { $('#pal-file').value = ''; $('#pal-file').click(); });
+  $('#pal-file').addEventListener('change', async () => {
+    const file = $('#pal-file').files && $('#pal-file').files[0];
+    if (!file) return;
+    try {
+      const img = await ProjectStorage.toImage(file);
+      const data = samplePixels(img, img.width, img.height);
+      if (img.close) img.close();
+      paletteFromPixels(data, `${file.name.replace(/\.[a-z0-9]+$/i, '').slice(0, 30) || 'Picture'} colors`);
+    } catch (err) {
+      toast('That picture couldn\'t be opened. Try a PNG or JPG.');
+    }
+  });
 
   // ---------------------------------------------------------------------------
   // Rigging: puppet parts, joints, poses and automatic in-betweens (see rig.js)

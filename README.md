@@ -50,6 +50,17 @@ Sound plays with the animation in **Loop** and **Once** modes, perfectly in step
 again each time round). The frame thumbnails show a small waveform, so you can see where words or
 beats land. Sounds are saved with your project.
 
+## Color matching and palettes
+
+- **Pick any color you can see** (backgrounds, photos, puppets): the Pick color tool,
+  **Alt + click**, touch and hold, or the eyedropper in the Color panel. The color wheel jumps to that
+  exact color and shows its hex code.
+- **Palette from picture** (Color panel): choose 6, 8 or 12 colors, then **This frame**, the
+  **Selection**, or a **Picture file…** (it isn't added to your drawing). Playground finds the main
+  colors and saves them as a palette. Each one is a color that really appears in the picture.
+- **Palettes** are saved with your project: tap a color to use it, **+** adds the current color,
+  **Edit** lets you tap colors to remove them, ✎ renames, × deletes. **+ New palette** starts one.
+
 ## Rigging (puppet animation)
 
 Build a character from separate parts joined at joints, pose it on a few frames, and let
