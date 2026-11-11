@@ -7,68 +7,35 @@
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-  <!-- ===== Top toolbar ===== -->
-  <header class="toolbar">
+  <!-- ===== Top bar ===== -->
+  <header class="topbar">
     <div class="group">
-      <button class="btn" data-tool="brush" title="Brush (B)">
+      <button class="tb" id="btn-menu" data-panel="panel-menu" title="Menu: view, touch settings, gestures, clear layer">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <button class="zoom-readout" id="zoom-readout" title="Fit the canvas to the screen (0)">100%</button>
+    </div>
+
+    <div class="group">
+      <button class="tb" data-tool="brush" title="Brush (B). Tap again for brush types and settings">
         <svg viewBox="0 0 24 24"><path d="M18.4 2.6a2 2 0 0 1 2.9 2.9L11.5 15.3l-2.8-2.8z"/><path d="M7.5 14.5c-2 0-3.5 1.6-3.5 3.5 0 1.2-.8 2-2 2.5 1.2.8 2.6 1 4 1 2.5 0 4.5-2 4.5-4.5z"/></svg>
-        <span>Brush</span>
       </button>
-      <button class="btn" data-tool="eraser" title="Eraser (E)">
-        <svg viewBox="0 0 24 24"><path d="M20 20H9l-5.5-5.5a2 2 0 0 1 0-2.8l8.7-8.7a2 2 0 0 1 2.8 0l5.5 5.5a2 2 0 0 1 0 2.8L13 18.8"/><path d="m6 11 7 7"/></svg>
-        <span>Eraser</span>
-      </button>
-      <button class="btn" data-tool="blend" title="Blend: smudge, soften or mix colors (S)">
+      <button class="tb" data-tool="blend" title="Blend: smudge, soften or mix (S). Tap again for settings">
         <svg viewBox="0 0 24 24"><path d="M12 2.7S6 9.1 6 14a6 6 0 0 0 12 0c0-4.9-6-11.3-6-11.3z"/><path d="M9.5 15a2.5 2.5 0 0 0 2.5 2.5"/></svg>
-        <span>Blend</span>
       </button>
-      <button class="btn" data-tool="eyedropper" title="Pick a color from the drawing (I)">
+      <button class="tb" data-tool="eraser" title="Eraser (E). Tap again for settings">
+        <svg viewBox="0 0 24 24"><path d="M20 20H9l-5.5-5.5a2 2 0 0 1 0-2.8l8.7-8.7a2 2 0 0 1 2.8 0l5.5 5.5a2 2 0 0 1 0 2.8L13 18.8"/><path d="m6 11 7 7"/></svg>
+      </button>
+      <button class="tb" data-tool="eyedropper" title="Pick a color from the drawing (I)">
         <svg viewBox="0 0 24 24"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3-3a2.1 2.1 0 0 1 3 3l-3 3 .5.5a1.4 1.4 0 0 1-2 2L11 6.5a1.4 1.4 0 0 1 2-2z"/></svg>
-        <span>Pick color</span>
       </button>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="group">
-      <button class="btn" id="btn-settings" data-panel="panel-brush" title="Brush type and settings">
-        <svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
-        <span id="settings-label">Pen</span>
-      </button>
-      <label class="size-quick" title="Size ( [ and ] keys )">
-        <span>Size</span>
-        <input type="range" id="quick-size" min="0" max="100">
-        <output id="quick-size-out">6</output>
-      </label>
-      <button class="btn" id="btn-color" data-panel="panel-color" title="Color wheel">
-        <span class="swatch" id="color-swatch"></span>
-        <span>Color</span>
-      </button>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="group">
-      <button class="btn" id="btn-undo" title="Undo (Ctrl+Z)">
-        <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
-        <span>Undo</span>
-      </button>
-      <button class="btn" id="btn-redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
-        <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
-        <span>Redo</span>
-      </button>
-      <button class="btn" id="btn-clear" title="Clear the canvas (can be undone)">
-        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-        <span>Clear</span>
-      </button>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="group">
-      <button class="btn" id="btn-layers" data-panel="panel-layers" title="Layers">
+      <span class="tb-sep"></span>
+      <button class="tb" id="btn-layers" data-panel="panel-layers" title="Layers">
         <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
-        <span id="layers-label">Layers</span>
+        <span class="tb-badge" id="layers-badge"></span>
+      </button>
+      <button class="tb" id="btn-color" data-panel="panel-color" title="Color">
+        <span class="swatch" id="color-swatch"></span>
       </button>
     </div>
   </header>
@@ -78,8 +45,21 @@
     <div id="canvas-wrap">
       <canvas id="canvas"></canvas>
       <canvas id="onion"></canvas>
-      <div id="cursor"></div>
     </div>
+    <div id="cursor"></div>
+
+    <!-- Floating side bar: size, opacity, undo, redo -->
+    <aside class="sidebar" id="sidebar">
+      <div class="vslider" id="s-size" title="Size"></div>
+      <div class="vslider" id="s-opacity" title="Opacity"></div>
+      <button class="sb-btn" id="btn-undo" title="Undo (Ctrl+Z, or tap with two fingers)">
+        <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+      </button>
+      <button class="sb-btn" id="btn-redo" title="Redo (Ctrl+Y, or tap with three fingers)">
+        <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+      </button>
+    </aside>
+    <div class="bubble" id="bubble"></div>
   </main>
 
   <!-- ===== Timeline: playback and frames ===== -->
@@ -179,6 +159,11 @@
         <output id="e-size-out"></output>
       </div>
       <div class="field">
+        <label for="e-opacity">Opacity</label>
+        <input type="range" id="e-opacity" min="1" max="100">
+        <output id="e-opacity-out"></output>
+      </div>
+      <div class="field">
         <label for="e-softness">Softness</label>
         <input type="range" id="e-softness" min="0" max="100">
         <output id="e-softness-out"></output>
@@ -218,6 +203,30 @@
         <button class="mini" id="l-rename" title="Rename the selected layer">Rename</button>
       </div>
     </div>
+  </div>
+
+  <!-- ===== Pop-out panel: menu ===== -->
+  <div class="panel" id="panel-menu" hidden>
+    <h2>View</h2>
+    <div class="mini-grid three">
+      <button class="mini" id="m-fit" title="Shortcut: 0">Fit to screen</button>
+      <button class="mini" id="m-actual" title="Show the drawing at its real pixel size">Actual size</button>
+      <button class="mini" id="m-straighten" title="Undo any rotation">Straighten</button>
+    </div>
+    <h2 class="gap">Touch</h2>
+    <label class="check"><input type="checkbox" id="m-finger"> Draw with finger</label>
+    <p class="hint">When a stylus is detected, finger drawing turns off automatically, so your palm won't leave marks.
+      Fingers can still zoom, rotate and undo.</p>
+    <h2 class="gap">Gestures</h2>
+    <ul class="gesture-list">
+      <li><b>Pinch with two fingers</b> to zoom, rotate and move the canvas</li>
+      <li><b>Tap with two fingers</b> to undo</li>
+      <li><b>Tap with three fingers</b> to redo</li>
+      <li><b>Mouse wheel</b> to zoom, <b>Shift + wheel</b> to rotate</li>
+      <li><b>Right-click and drag</b> to move the canvas</li>
+    </ul>
+    <h2 class="gap">Layer</h2>
+    <button class="mini danger wide" id="btn-clear" title="Can be undone">Clear this layer on this frame</button>
   </div>
 
   <!-- ===== Pop-out panel: onion skin settings ===== -->

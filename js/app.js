@@ -162,9 +162,10 @@
     color: Color.normalizeHex(saved.color) || '#1F2328',
     pressure: saved.pressure !== false,
     brushes: {},
-    eraser: Object.assign({ size: 30, softness: 0, smoothing: 20 }, saved.eraser || {}),
+    eraser: Object.assign({ size: 30, opacity: 100, softness: 0, smoothing: 20 }, saved.eraser || {}),
     blend: Object.assign({ mode: 'smudge', size: 40, strength: 50, smoothing: 20 }, saved.blend || {}),
     onion: Object.assign({ enabled: true, prev: 1, next: 0, opacity: 35 }, saved.onion || {}),
+    fingerDraw: saved.fingerDraw !== false,
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
@@ -175,6 +176,7 @@
       brushType: state.brushType, color: state.color, pressure: state.pressure,
       brushes: state.brushes, eraser: state.eraser, blend: state.blend,
       onion: state.onion, fps: doc.fps,
+      fingerDraw: state.fingerDraw, stylusSeen: typeof stylusSeen !== 'undefined' && stylusSeen,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -329,24 +331,142 @@
   function refreshOnion() { onionDirty = true; requestRender(); }
 
   // ---------------------------------------------------------------------------
+  // The view: how the canvas is zoomed, rotated and moved on screen
+  // ---------------------------------------------------------------------------
+  const stage = $('#stage');
+  const wrap = $('#canvas-wrap');
+  const cursorEl = $('#cursor');
+  // s = zoom (1 = fit to screen), r = rotation in radians,
+  // tx/ty = how far the canvas center is from the screen center, in pixels.
+  const view = { s: 1, r: 0, tx: 0, ty: 0 };
+  let baseW = DOC_W, baseH = DOC_H; // canvas size on screen when "fit"
+  const S_MIN = 0.2;
+  const sMax = () => (16 * DOC_W) / baseW; // up to 1600% of real size
+
+  function fit() {
+    const narrow = stage.clientWidth < 640;
+    const side = narrow ? 62 : 70;   // leave room for the side bar
+    const pad = narrow ? 10 : 24;
+    const scale = Math.min((stage.clientWidth - side * 2) / DOC_W, (stage.clientHeight - pad * 2) / DOC_H);
+    baseW = Math.max(50, Math.floor(DOC_W * scale));
+    baseH = Math.max(28, Math.floor(DOC_H * scale));
+    wrap.style.width = baseW + 'px';
+    wrap.style.height = baseH + 'px';
+    applyView();
+  }
+  if (window.ResizeObserver) new ResizeObserver(fit).observe(stage);
+  window.addEventListener('resize', () => { fit(); closePanels(); });
+
+  function applyView() {
+    wrap.style.transform =
+      `translate(-50%, -50%) translate(${view.tx}px, ${view.ty}px) rotate(${view.r}rad) scale(${view.s})`;
+    const zoom = (view.s * baseW) / DOC_W; // 1 = real pixel size
+    wrap.classList.toggle('pixelated', zoom >= 4);
+    let deg = Math.round(((view.r * 180) / Math.PI) % 360);
+    if (deg > 180) deg -= 360;
+    if (deg <= -180) deg += 360;
+    $('#zoom-readout').textContent = Math.round(zoom * 100) + '%' + (deg ? ` · ${deg}°` : '');
+  }
+
+  // Change zoom/rotation while keeping the point (px, py) on screen fixed.
+  // Points are measured from the center of the drawing area.
+  function setViewAround(px, py, s2, r2) {
+    const dx = px - view.tx, dy = py - view.ty;
+    const c = Math.cos(view.r), sn = Math.sin(view.r);
+    const lx = (dx * c + dy * sn) / view.s, ly = (-dx * sn + dy * c) / view.s;
+    s2 = clamp(s2, S_MIN, sMax());
+    const c2 = Math.cos(r2), sn2 = Math.sin(r2);
+    view.tx = px - (lx * c2 - ly * sn2) * s2;
+    view.ty = py - (lx * sn2 + ly * c2) * s2;
+    view.s = s2;
+    view.r = r2;
+    applyView();
+  }
+  function fitView() { view.s = 1; view.r = 0; view.tx = 0; view.ty = 0; applyView(); }
+  function actualSize() { setViewAround(view.tx, view.ty, DOC_W / baseW, view.r); }
+  function straighten() { setViewAround(view.tx, view.ty, view.s, 0); }
+  function zoomBy(f) { setViewAround(0, 0, view.s * f, view.r); }
+  // After a pinch, a rotation close to straight (or a quarter turn) snaps to it.
+  function snapRotation() {
+    const q = Math.PI / 2;
+    const near = Math.round(view.r / q) * q;
+    if (Math.abs(view.r - near) < 0.14) setViewAround(view.tx, view.ty, view.s, near);
+  }
+
+  // Screen position -> position on the drawing (in drawing pixels).
+  function stagePoint(e, sr) {
+    return { x: e.clientX - sr.left - sr.width / 2, y: e.clientY - sr.top - sr.height / 2 };
+  }
+  function toDoc(e, sr) {
+    const p = stagePoint(e, sr || stage.getBoundingClientRect());
+    const dx = p.x - view.tx, dy = p.y - view.ty;
+    const c = Math.cos(view.r), sn = Math.sin(view.r);
+    const ux = (dx * c + dy * sn) / view.s, uy = (-dx * sn + dy * c) / view.s;
+    return {
+      x: (ux + baseW / 2) * (DOC_W / baseW),
+      y: (uy + baseH / 2) * (DOC_H / baseH),
+      // Only a stylus reports real pressure. Mouse and finger count as full pressure.
+      pressure: e.pointerType === 'pen' ? (e.pressure > 0 ? e.pressure : 0.5) : 1,
+    };
+  }
+
+  // The circle that shows your brush size under the mouse or stylus.
+  function updateCursor(e) {
+    if (e.pointerType === 'touch' || state.tool === 'eyedropper' || playing || gesture ||
+        (e.target.closest && e.target.closest('.sidebar'))) {
+      cursorEl.style.display = 'none';
+      return;
+    }
+    const sr = stage.getBoundingClientRect();
+    showCursorAt(e.clientX - sr.left, e.clientY - sr.top);
+  }
+  function showCursorAt(x, y) {
+    const d = Math.max(4, currentSettings().size * view.s * (baseW / DOC_W));
+    cursorEl.style.display = 'block';
+    cursorEl.style.width = cursorEl.style.height = d + 'px';
+    cursorEl.style.left = x + 'px';
+    cursorEl.style.top = y + 'px';
+  }
+
+  // Mouse wheel zooms; Shift + wheel rotates. (A trackpad pinch also zooms.)
+  stage.addEventListener('wheel', (e) => {
+    if (e.target.closest('.sidebar')) return;
+    e.preventDefault();
+    const p = stagePoint(e, stage.getBoundingClientRect());
+    let d = e.deltaY || e.deltaX;
+    if (e.deltaMode === 1) d *= 16;
+    if (e.shiftKey) setViewAround(p.x, p.y, view.s, view.r + d * 0.003);
+    else setViewAround(p.x, p.y, view.s * Math.exp(-d * (e.ctrlKey ? 0.01 : 0.0015)), view.r);
+  }, { passive: false });
+
+  // ---------------------------------------------------------------------------
   // Mouse / touch / stylus input
   // ---------------------------------------------------------------------------
   let activePointer = null; // only one finger/pen draws at a time
   let stroke = null;        // brush or eraser stroke in progress
   let blendStroke = null;   // Blend tool stroke in progress
   let strokeTarget = null;  // { layer, cel } being drawn on
+  let strokeStart = 0;
   let smooth = null;
   let lastRaw = null;
   let strokeSmoothing = 0;
 
-  function toDoc(e, rect) {
-    const r = rect || display.getBoundingClientRect();
-    return {
-      x: (e.clientX - r.left) * (DOC_W / r.width),
-      y: (e.clientY - r.top) * (DOC_H / r.height),
-      // Only a stylus reports real pressure. Mouse and finger count as full pressure.
-      pressure: e.pointerType === 'pen' ? (e.pressure > 0 ? e.pressure : 0.5) : 1,
-    };
+  const touches = new Map(); // fingers currently on the screen
+  let gesture = null;        // two-finger pinch in progress
+  let tapSession = null;     // used to spot two- and three-finger taps
+  let panDrag = null;        // right-click drag to move the canvas
+  let stylusSeen = !!saved.stylusSeen;
+
+  // Palm rejection: the first time a stylus is used, finger drawing turns off.
+  function noticeStylus() {
+    if (stylusSeen) return;
+    stylusSeen = true;
+    if (state.fingerDraw) {
+      state.fingerDraw = false;
+      toast('Stylus detected: finger drawing is now off, so your palm won\'t leave marks. You can turn it back on in the menu.');
+    }
+    saveSettings();
+    syncUI();
   }
 
   // Smoothing: the drawn point follows the real point with a little lag,
@@ -359,16 +479,14 @@
     (stroke || blendStroke).moveTo({ x: smooth.x, y: smooth.y, pressure: smooth.pressure });
   }
 
-  display.addEventListener('pointerdown', (e) => {
-    if (activePointer !== null) return;
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
+  function startDrawing(e) {
     e.preventDefault();
     if (playing) { stopPlay(); return; }
     const p = toDoc(e);
 
     if (state.tool === 'eyedropper') {
       activePointer = e.pointerId;
-      try { display.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       pickColor(p);
       return;
     }
@@ -376,12 +494,13 @@
     const layer = activeLayer();
     if (!canEdit(layer)) return;
     activePointer = e.pointerId;
-    try { display.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
 
     const st = currentSettings();
     strokeSmoothing = st.smoothing / 100;
     smooth = { x: p.x, y: p.y, pressure: p.pressure };
     lastRaw = p;
+    strokeStart = performance.now();
 
     if (state.tool === 'blend') {
       const cel = celOf(layer, doc.frame);
@@ -403,33 +522,32 @@
       ctx: bctx,
       color: state.color,
       size: st.size,
-      opacity: isEraser ? 1 : st.opacity / 100,
+      opacity: st.opacity / 100,
       softness: isEraser ? st.softness / 100 : 0,
       pressure: state.pressure,
     });
     stroke.begin({ x: p.x, y: p.y, pressure: p.pressure });
-    if (!isEraser) addRecent(state.color);
     requestRender();
-  });
+  }
 
-  display.addEventListener('pointermove', (e) => {
-    updateCursor(e);
-    if (e.pointerId !== activePointer) return;
-    if (state.tool === 'eyedropper') { pickColor(toDoc(e)); return; }
-    if (!busy()) return;
-    const rect = display.getBoundingClientRect();
-    const list = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
-    const events = list.length ? list : [e];
-    for (const ev of events) {
-      const p = toDoc(ev, rect);
-      lastRaw = p;
-      feed(p);
+  // Throw away the stroke in progress (used when a second finger lands).
+  function abortStroke() {
+    if (stroke) {
+      stroke = null;
+      bctx.setTransform(1, 0, 0, 1, 0, 0);
+      bctx.clearRect(0, 0, DOC_W, DOC_H);
     }
-    if (blendStroke) blendStroke.flush();
+    if (blendStroke) {
+      const res = blendStroke.end();
+      if (res) strokeTarget.cel.getContext('2d').putImageData(res.before, res.rect.x, res.rect.y);
+      blendStroke = null;
+    }
+    strokeTarget = null;
+    activePointer = null;
     requestRender();
-  });
+  }
 
-  function endPointer(e) {
+  function finishPointer(e) {
     if (e.pointerId !== activePointer) return;
     activePointer = null;
     if (state.tool === 'eyedropper') {
@@ -442,14 +560,158 @@
     if (lastRaw && strokeSmoothing > 0) {
       for (let i = 0; i < 40 && Math.hypot(lastRaw.x - smooth.x, lastRaw.y - smooth.y) > 0.5; i++) feed(lastRaw);
     }
+    if (tapSession) tapSession.drew = true; // a real stroke isn't an undo tap
     if (blendStroke) commitBlend();
-    else { stroke.end(); commitStroke(); }
+    else {
+      if (state.tool !== 'eraser') addRecent(state.color);
+      stroke.end();
+      commitStroke();
+    }
   }
-  display.addEventListener('pointerup', endPointer);
-  display.addEventListener('pointercancel', endPointer);
-  display.addEventListener('lostpointercapture', endPointer);
-  display.addEventListener('pointerleave', () => { if (activePointer === null) cursorEl.style.display = 'none'; });
-  display.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Two-finger pinch: zoom, rotate and move together.
+  function startGesture() {
+    const ids = [...touches.keys()].slice(0, 2);
+    const a = touches.get(ids[0]), b = touches.get(ids[1]);
+    gesture = { ids, a0: { x: a.x, y: a.y }, b0: { x: b.x, y: b.y }, view0: { ...view }, rotating: false };
+    cursorEl.style.display = 'none';
+  }
+  function updateGesture() {
+    const g = gesture;
+    const a = touches.get(g.ids[0]), b = touches.get(g.ids[1]);
+    if (!a || !b) return;
+    const v0 = g.view0;
+    const m0 = { x: (g.a0.x + g.b0.x) / 2, y: (g.a0.y + g.b0.y) / 2 };
+    const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const d0 = Math.max(1, Math.hypot(g.b0.x - g.a0.x, g.b0.y - g.a0.y));
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    let turn = Math.atan2(b.y - a.y, b.x - a.x) - Math.atan2(g.b0.y - g.a0.y, g.b0.x - g.a0.x);
+    turn = Math.atan2(Math.sin(turn), Math.cos(turn));
+    if (!g.rotating && Math.abs(turn) > 0.12) g.rotating = true; // ignore tiny accidental twists
+    if (Math.abs(d - d0) > 12 || Math.hypot(m.x - m0.x, m.y - m0.y) > 12 || g.rotating) {
+      if (tapSession) tapSession.moved = true;
+    }
+    // The spot on the drawing that was under your fingers stays under them.
+    const dx = m0.x - v0.tx, dy = m0.y - v0.ty;
+    const c = Math.cos(v0.r), sn = Math.sin(v0.r);
+    const lx = (dx * c + dy * sn) / v0.s, ly = (-dx * sn + dy * c) / v0.s;
+    const s2 = clamp(v0.s * (d / d0), S_MIN, sMax());
+    const r2 = v0.r + (g.rotating ? turn : 0);
+    const c2 = Math.cos(r2), sn2 = Math.sin(r2);
+    view.tx = m.x - (lx * c2 - ly * sn2) * s2;
+    view.ty = m.y - (lx * sn2 + ly * c2) * s2;
+    view.s = s2;
+    view.r = r2;
+    applyView();
+  }
+  function endGesture() {
+    gesture = null;
+    snapRotation();
+  }
+
+  function touchPoint(e) {
+    const sr = stage.getBoundingClientRect();
+    return stagePoint(e, sr);
+  }
+
+  stage.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.sidebar')) return;
+    if (e.pointerType === 'pen') noticeStylus();
+
+    if (e.pointerType === 'touch') {
+      const p = touchPoint(e);
+      touches.set(e.pointerId, { x: p.x, y: p.y, sx: p.x, sy: p.y });
+      try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      if (!tapSession) tapSession = { start: performance.now(), max: 0, moved: false, drew: false };
+      tapSession.max = Math.max(tapSession.max, touches.size);
+      if (touches.size === 2) {
+        // A second finger means a gesture, not drawing. If the first finger
+        // only just started a stroke, throw it away; otherwise keep it.
+        if (activePointer !== null) {
+          if (busy() && performance.now() - strokeStart > 300) finishPointer({ pointerId: activePointer });
+          else abortStroke();
+        }
+        startGesture();
+      } else if (touches.size === 1 && state.fingerDraw) {
+        startDrawing(e);
+      }
+      return;
+    }
+
+    if (e.pointerType === 'mouse' && (e.button === 1 || e.button === 2)) {
+      e.preventDefault();
+      panDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+      try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      stage.classList.add('panning');
+      cursorEl.style.display = 'none';
+      return;
+    }
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (activePointer !== null) return;
+    startDrawing(e);
+  });
+
+  stage.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+      const t = touches.get(e.pointerId);
+      const p = touchPoint(e);
+      t.x = p.x; t.y = p.y;
+      if (tapSession && Math.hypot(t.x - t.sx, t.y - t.sy) > 12) tapSession.moved = true;
+      if (gesture) { updateGesture(); return; }
+    }
+    if (panDrag && e.pointerId === panDrag.id) {
+      view.tx = panDrag.tx + (e.clientX - panDrag.x);
+      view.ty = panDrag.ty + (e.clientY - panDrag.y);
+      applyView();
+      return;
+    }
+    updateCursor(e);
+    if (e.pointerId !== activePointer) return;
+    if (state.tool === 'eyedropper') { pickColor(toDoc(e)); return; }
+    if (!busy()) return;
+    const sr = stage.getBoundingClientRect();
+    const list = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
+    const events = list.length ? list : [e];
+    for (const ev of events) {
+      const p = toDoc(ev, sr);
+      lastRaw = p;
+      feed(p);
+    }
+    if (blendStroke) blendStroke.flush();
+    requestRender();
+  });
+
+  function onPointerUp(e) {
+    if (panDrag && e.pointerId === panDrag.id) {
+      panDrag = null;
+      stage.classList.remove('panning');
+      return;
+    }
+    if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+      touches.delete(e.pointerId);
+      if (gesture && touches.size < 2) endGesture();
+      finishPointer(e);
+      if (touches.size === 0 && tapSession) {
+        const s = tapSession;
+        tapSession = null;
+        if (!s.moved && !s.drew && performance.now() - s.start < 400) {
+          if (s.max === 2) undo();
+          else if (s.max === 3) redo();
+        }
+      }
+      return;
+    }
+    finishPointer(e);
+  }
+  stage.addEventListener('pointerup', onPointerUp);
+  stage.addEventListener('pointercancel', onPointerUp);
+  stage.addEventListener('lostpointercapture', (e) => { if (!touches.has(e.pointerId)) finishPointer(e); });
+  stage.addEventListener('pointerleave', () => { if (activePointer === null) cursorEl.style.display = 'none'; });
+  stage.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Stop the page itself from zooming or scrolling on touch screens.
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+  document.addEventListener('touchmove', (e) => { if (e.target.closest('#stage')) e.preventDefault(); }, { passive: false });
 
   // Blend the finished stroke onto the layer, and save an undo step
   // holding just the changed area (much smaller than the whole picture).
@@ -496,36 +758,6 @@
     const d = dctx.getImageData(x, y, 1, 1).data;
     picker.setHex(Color.rgbToHex(d[0], d[1], d[2]));
   }
-
-  // The circle that shows your brush size under the mouse or stylus.
-  const cursorEl = $('#cursor');
-  function updateCursor(e) {
-    if (e.pointerType === 'touch' || state.tool === 'eyedropper' || playing) {
-      cursorEl.style.display = 'none';
-      return;
-    }
-    const r = display.getBoundingClientRect();
-    const d = Math.max(4, currentSettings().size * (r.width / DOC_W));
-    cursorEl.style.display = 'block';
-    cursorEl.style.width = cursorEl.style.height = d + 'px';
-    cursorEl.style.left = (e.clientX - r.left) + 'px';
-    cursorEl.style.top = (e.clientY - r.top) + 'px';
-  }
-
-  // Keep the canvas as big as possible while keeping its shape.
-  const stage = $('#stage');
-  function fit() {
-    const pad = stage.clientWidth < 640 ? 8 : 16;
-    const scale = Math.min((stage.clientWidth - pad * 2) / DOC_W, (stage.clientHeight - pad * 2) / DOC_H);
-    display.style.width = Math.max(50, Math.floor(DOC_W * scale)) + 'px';
-    display.style.height = Math.max(28, Math.floor(DOC_H * scale)) + 'px';
-  }
-  if (window.ResizeObserver) new ResizeObserver(fit).observe(stage);
-  window.addEventListener('resize', () => { fit(); closePanels(); });
-
-  // Stop the page from zooming or scrolling while drawing on touch screens.
-  document.addEventListener('gesturestart', (e) => e.preventDefault());
-  document.addEventListener('touchmove', (e) => { if (e.target.closest('#stage')) e.preventDefault(); }, { passive: false });
 
   // ---------------------------------------------------------------------------
   // Frames: the strip of thumbnails at the bottom
@@ -774,7 +1006,7 @@
   }
 
   function refreshLayersPanel() {
-    $('#layers-label').textContent = doc.layers.length > 1 ? `Layers (${doc.layers.length})` : 'Layers';
+    $('#layers-badge').textContent = doc.layers.length > 1 ? doc.layers.length : '';
     if (layersPanel.hidden) return;
     buildLayerList();
   }
@@ -1055,11 +1287,83 @@
     state.tool = t;
     syncUI();
   }
-  $$('[data-tool]').forEach((b) => b.addEventListener('click', () => setTool(b.dataset.tool)));
+  // Tap a tool to choose it; tap it again to open its settings.
+  $$('[data-tool]').forEach((b) => b.addEventListener('click', () => {
+    const t = b.dataset.tool;
+    if (state.tool === t && t !== 'eyedropper') {
+      const panel = $('#panel-brush');
+      if (panel.hidden) openPanel(panel, b); else closePanels();
+    } else {
+      closePanels();
+      setTool(t);
+    }
+  }));
 
   $('#btn-undo').addEventListener('click', undo);
   $('#btn-redo').addEventListener('click', redo);
-  $('#btn-clear').addEventListener('click', clearLayer);
+  $('#btn-clear').addEventListener('click', () => { closePanels(); clearLayer(); });
+
+  // Menu: view and touch settings
+  $('#zoom-readout').addEventListener('click', fitView);
+  $('#m-fit').addEventListener('click', fitView);
+  $('#m-actual').addEventListener('click', actualSize);
+  $('#m-straighten').addEventListener('click', straighten);
+  $('#m-finger').addEventListener('change', (e) => { state.fingerDraw = e.target.checked; saveSettings(); });
+
+  // Side bar sliders (size and opacity). Drag up or down.
+  const bubble = $('#bubble');
+  function makeVSlider(el, opts) {
+    el.innerHTML = '<div class="vs-track"><div class="vs-fill"></div></div><div class="vs-thumb"></div>';
+    const fill = el.querySelector('.vs-fill'), thumb = el.querySelector('.vs-thumb');
+    let dragging = false;
+    const update = () => {
+      const f = clamp(opts.get(), 0, 1);
+      fill.style.height = f * 100 + '%';
+      thumb.style.bottom = f * 100 + '%';
+    };
+    const fromEvent = (e) => {
+      const r = el.getBoundingClientRect();
+      opts.set(clamp(1 - (e.clientY - r.top) / r.height, 0, 1));
+      update();
+      const sr = stage.getBoundingClientRect(), tr = thumb.getBoundingClientRect();
+      bubble.textContent = opts.text();
+      bubble.style.display = 'block';
+      bubble.style.left = ($('#sidebar').getBoundingClientRect().right - sr.left + 10) + 'px';
+      bubble.style.top = (tr.top + tr.height / 2 - sr.top) + 'px';
+      if (opts.onDrag) opts.onDrag();
+    };
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      dragging = true;
+      try { el.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      fromEvent(e);
+    });
+    el.addEventListener('pointermove', (e) => { if (dragging) fromEvent(e); });
+    const stop = () => {
+      if (!dragging) return;
+      dragging = false;
+      bubble.style.display = 'none';
+      cursorEl.style.display = 'none';
+      saveSettings();
+      syncUI();
+    };
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    return { update };
+  }
+  const opacityKey = () => (state.tool === 'blend' ? 'strength' : 'opacity');
+  const sizeSlider = makeVSlider($('#s-size'), {
+    get: () => sizeToSlider(currentSettings().size) / 100,
+    set: (f) => { currentSettings().size = sliderToSize(f * 100); },
+    text: () => `Size ${currentSettings().size}`,
+    // Preview the brush size in the middle of the screen while dragging.
+    onDrag: () => showCursorAt(stage.clientWidth / 2, stage.clientHeight / 2),
+  });
+  const opacitySlider = makeVSlider($('#s-opacity'), {
+    get: () => (currentSettings()[opacityKey()] - 1) / 99,
+    set: (f) => { currentSettings()[opacityKey()] = Math.round(1 + f * 99); },
+    text: () => `${state.tool === 'blend' ? 'Strength' : 'Opacity'} ${currentSettings()[opacityKey()]}%`,
+  });
 
   function closePanels() {
     if (document.activeElement && document.activeElement.classList.contains('layer-name-input')) {
@@ -1084,7 +1388,7 @@
       panel.style.bottom = (window.innerHeight - r.top + 6) + 'px';
       panel.style.maxHeight = (r.top - 14) + 'px';
     } else {
-      const tb = $('.toolbar').getBoundingClientRect();
+      const tb = $('.topbar').getBoundingClientRect();
       panel.style.bottom = '';
       panel.style.top = (tb.bottom + 6) + 'px';
       panel.style.maxHeight = (window.innerHeight - tb.bottom - 14) + 'px';
@@ -1098,7 +1402,7 @@
   });
   // Tapping anywhere outside a panel closes it.
   document.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.panel') || e.target.closest('[data-panel]')) return;
+    if (e.target.closest('.panel') || e.target.closest('[data-panel]') || e.target.closest('[data-tool]')) return;
     closePanels();
   }, true);
 
@@ -1135,7 +1439,6 @@
   function onInput(id, fn) {
     $('#' + id).addEventListener('input', (e) => { fn(e.target); saveSettings(); syncUI(); });
   }
-  onInput('quick-size', (el) => { currentSettings().size = sliderToSize(+el.value); });
   onInput('b-size', (el) => { state.brushes[state.brushType].size = sliderToSize(+el.value); });
   onInput('b-opacity', (el) => { state.brushes[state.brushType].opacity = +el.value; });
   onInput('b-smoothing', (el) => { state.brushes[state.brushType].smoothing = +el.value; });
@@ -1143,6 +1446,7 @@
   onInput('e-size', (el) => { state.eraser.size = sliderToSize(+el.value); });
   onInput('e-softness', (el) => { state.eraser.softness = +el.value; });
   onInput('e-smoothing', (el) => { state.eraser.smoothing = +el.value; });
+  onInput('e-opacity', (el) => { state.eraser.opacity = +el.value; });
   onInput('x-size', (el) => { state.blend.size = sliderToSize(+el.value); });
   onInput('x-strength', (el) => { state.blend.strength = +el.value; });
   onInput('x-smoothing', (el) => { state.blend.smoothing = +el.value; });
@@ -1179,14 +1483,15 @@
 
     const tool = state.tool;
     const label = tool === 'eraser' ? 'Eraser' : tool === 'blend' ? 'Blend' : Brushes.TYPES[state.brushType].label;
-    $('#settings-label').textContent = label;
     $('#brush-section').hidden = tool === 'eraser' || tool === 'blend';
     $('#eraser-section').hidden = tool !== 'eraser';
     $('#blend-section').hidden = tool !== 'blend';
 
-    const cur = currentSettings();
-    $('#quick-size').value = sizeToSlider(cur.size);
-    $('#quick-size-out').textContent = cur.size;
+    sizeSlider.update();
+    opacitySlider.update();
+    $('#s-size').title = `${label} size`;
+    $('#s-opacity').title = tool === 'blend' ? 'Blend strength' : `${label} opacity`;
+    $('#m-finger').checked = state.fingerDraw;
 
     const b = state.brushes[state.brushType];
     $('#b-size').value = sizeToSlider(b.size);
@@ -1203,6 +1508,8 @@
     $('#e-softness-out').textContent = state.eraser.softness + '%';
     $('#e-smoothing').value = state.eraser.smoothing;
     $('#e-smoothing-out').textContent = state.eraser.smoothing + '%';
+    $('#e-opacity').value = state.eraser.opacity;
+    $('#e-opacity-out').textContent = state.eraser.opacity + '%';
 
     $('#x-size').value = sizeToSlider(state.blend.size);
     $('#x-size-out').textContent = state.blend.size;
@@ -1223,7 +1530,7 @@
     $('#o-opacity-out').textContent = state.onion.opacity + '%';
 
     $('#color-swatch').style.background = state.color;
-    display.classList.toggle('picking', tool === 'eyedropper');
+    stage.classList.toggle('picking', tool === 'eyedropper');
   }
 
   // ---------------------------------------------------------------------------
@@ -1247,6 +1554,9 @@
     else if (k === 's') setTool('blend');
     else if (k === 'i') setTool('eyedropper');
     else if (k === 'o') $('#btn-onion').click();
+    else if (k === '0') fitView();
+    else if (k === '=' || k === '+') zoomBy(1.25);
+    else if (k === '-') zoomBy(0.8);
     else if (k === 'escape') closePanels();
     else if (k === '[' || k === ']') {
       const s = currentSettings();
