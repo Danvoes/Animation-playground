@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Fredoka:wght@600&display=swap");
 /* ============ Colors (light and dark mode) ============ */
 :root {
   --bg: #eceef2;
@@ -535,10 +536,14 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
 /* ============ The "Playground" name: every letter its own color ============ */
 .brand {
   display: flex; align-items: baseline; margin: 0 6px 0 4px;
-  font: 800 21px/1 ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", system-ui, sans-serif;
-  letter-spacing: .5px; white-space: nowrap; user-select: none;
+  font: 600 24px/1 "Fredoka", "Chalkboard SE", "Comic Sans MS", ui-rounded, system-ui, sans-serif;
+  letter-spacing: 1px; white-space: nowrap; user-select: none;
 }
-.brand span { text-shadow: 0 1px 0 rgba(0, 0, 0, .12); }
+/* Bouncy letters: each one tilts and hops a little, like a child's lettering. */
+.brand span { display: inline-block; text-shadow: 0 2px 0 rgba(0, 0, 0, .15); }
+.brand span:nth-child(odd)  { transform: translateY(1px) rotate(-6deg); }
+.brand span:nth-child(even) { transform: translateY(-2px) rotate(5deg); }
+.brand span:nth-child(3n)   { transform: translateY(0) rotate(-2deg); }
 .brand span:nth-child(1)  { color: #e5484d; }
 .brand span:nth-child(2)  { color: #f76b15; }
 .brand span:nth-child(3)  { color: #f5a524; }
@@ -549,7 +554,7 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
 .brand span:nth-child(8)  { color: #8e4ec6; }
 .brand span:nth-child(9)  { color: #d6409f; }
 .brand span:nth-child(10) { color: #e93d82; }
-.brand-menu { display: none; font-size: 26px; margin: 0 0 14px; }
+.brand-menu { display: none; font-size: 30px; margin: 0 0 14px; }
 @media (max-width: 760px) { .topbar .brand { display: none; } .brand-menu { display: flex; } }
 
 /* ============ Timing ============ */
