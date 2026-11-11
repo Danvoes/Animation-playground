@@ -468,3 +468,12 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
 }
 .text-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 @media (max-width: 640px) { .project-title { display: none; } }
+
+/* Highlight while dragging pictures over the canvas */
+#stage.drop-target::after {
+  content: "Drop pictures here"; position: absolute; inset: 10px; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  border: 3px dashed var(--accent); border-radius: 16px;
+  background: rgba(79, 109, 245, .12); color: #fff; font-size: 18px; font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, .6); pointer-events: none;
+}

@@ -23,6 +23,19 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 
 Undo history isn't kept when you close the page.
 
+## Adding pictures
+
+Open the menu and use **Insert image**:
+
+- **On this frame:** the picture goes on a new layer above the current one, and Transform opens
+  so you can move, resize or rotate it. To trace over it, lower that layer's opacity in Layers.
+- **As background:** the picture goes on a new bottom layer that shows on every frame.
+- **Several pictures as frames:** choose several pictures; each becomes its own frame
+  (in file-name order) on a new layer. Great for stop-motion photos.
+
+Big pictures are shrunk to fit the canvas. You can also **drag pictures onto the canvas**
+(several at once become frames) or **paste** one with Ctrl+V.
+
 ## The screen
 
 - **Top bar, right:** Brush, Blend, Eraser, Pick color, Select, Transform, Layers, Color.
@@ -119,6 +132,5 @@ Undo history isn't kept when you close the page.
 
 ## Coming next
 
-- **Stage 3:** importing images
 - **Stage 4:** audio
 - **Stage 6:** exporting video with audio

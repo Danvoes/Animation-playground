@@ -2880,6 +2880,155 @@
   });
 
   // ---------------------------------------------------------------------------
+  // Inserting pictures (PNG, JPG, ...)
+  // ---------------------------------------------------------------------------
+  const imageInput = $('#i-file');
+  let insertMode = 'frame';
+
+  const isImageFile = (f) => /^image\//.test(f.type) || /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name);
+  // A friendly layer name from the file name, e.g. "cat.png" -> "cat".
+  const nameFromFile = (f) => (f.name || 'Picture').replace(/\.[a-z0-9]+$/i, '').slice(0, 40) || 'Picture';
+
+  // Draw a picture onto a new full-size canvas: big pictures are shrunk to fit,
+  // small ones keep their size. Either way it's centered.
+  function pictureCanvas(img) {
+    const c = makeCanvas(DOC_W, DOC_H);
+    const g = c.getContext('2d');
+    const w = img.width, h = img.height;
+    const s = Math.min(1, DOC_W / w, DOC_H / h);
+    const dw = Math.round(w * s), dh = Math.round(h * s);
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(img, Math.round((DOC_W - dw) / 2), Math.round((DOC_H - dh) / 2), dw, dh);
+    if (img.close) img.close();
+    return c;
+  }
+
+  function chooseImages(mode) {
+    if (busy()) return;
+    insertMode = mode;
+    imageInput.multiple = mode === 'sequence';
+    imageInput.value = '';
+    closePanels();
+    imageInput.click();
+  }
+  $('#i-frame').addEventListener('click', () => chooseImages('frame'));
+  $('#i-bg').addEventListener('click', () => chooseImages('background'));
+  $('#i-seq').addEventListener('click', () => chooseImages('sequence'));
+  imageInput.addEventListener('change', () => insertImages([...(imageInput.files || [])], insertMode));
+
+  async function insertImages(files, mode) {
+    files = files.filter(isImageFile);
+    if (!files.length) { toast('Please choose a picture (PNG or JPG).'); return; }
+    if (busy()) return;
+    if (doc.layers.length >= MAX_LAYERS) { toast(`You can have up to ${MAX_LAYERS} layers. Delete or merge one first.`); return; }
+    if (transform) applyTransform();
+    stopPlay();
+    setSelection(null); // so Transform moves the whole picture
+    if (mode === 'sequence' && files.length > 1) { await insertSequence(files); return; }
+
+    let img;
+    try {
+      img = await ProjectStorage.toImage(files[0]);
+    } catch (err) {
+      toast('That picture couldn\'t be opened. Try a PNG or JPG.');
+      return;
+    }
+    const layer = newLayer(nameFromFile(files[0]));
+    layerCounter--; // a picture layer doesn't use up a "Layer N" number
+    const background = mode === 'background';
+    layer.static = background;
+    layer.cels.set(celKey(layer, doc.frame), pictureCanvas(img));
+    // Backgrounds go to the bottom of the stack; other pictures go above the current layer.
+    addLayerStep(background ? 'Insert background' : 'Insert picture', layer, background ? 0 : layerIndex(doc.active) + 1);
+    // Straight into Transform so you can place it.
+    if (state.tool === 'transform') startTransform(); else setTool('transform');
+    toast(background
+      ? 'Picture added behind everything, on every frame. Drag to move it, drag a corner to resize, then tap Done.'
+      : 'Picture added. Drag to move it, drag a corner to resize, then tap Done.', 4500);
+  }
+
+  // Several pictures -> one new layer, one picture per frame (starting at the current frame).
+  async function insertSequence(files) {
+    files.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+    const room = MAX_FRAMES - doc.frames.length + 1;
+    if (files.length > room) {
+      files = files.slice(0, room);
+      toast(`Only the first ${room} pictures fit (the limit is ${MAX_FRAMES} frames).`);
+    }
+    toast(`Adding ${files.length} pictures…`, 2000);
+    const layer = newLayer('Picture frames');
+    layerCounter--;
+    const prevActive = doc.active, prevFrame = doc.frame;
+    const start = frameIndex();
+    const added = [];
+    let skipped = 0;
+    for (let i = 0; i < files.length; i++) {
+      let img;
+      try { img = await ProjectStorage.toImage(files[i]); } catch (_) { skipped++; continue; }
+      const frame = added.length === 0 && !layer.cels.size ? doc.frame : newFrame();
+      if (frame !== doc.frame) added.push(frame);
+      layer.cels.set(frame.id, pictureCanvas(img));
+    }
+    if (!layer.cels.size) { toast('Those pictures couldn\'t be opened. Try PNG or JPG files.'); return; }
+    const index = layerIndex(prevActive) + 1;
+    const apply = () => {
+      putLayer(layer, index);
+      doc.frames.splice(start + 1, 0, ...added);
+      doc.active = layer;
+      doc.frame = prevFrame;
+    };
+    const unapply = () => {
+      takeLayer(layer);
+      for (const f of added) doc.frames.splice(doc.frames.indexOf(f), 1);
+      doc.active = prevActive;
+      doc.frame = prevFrame;
+    };
+    apply();
+    history.push({ label: 'Pictures as frames', undo: unapply, redo: apply });
+    framesChanged();
+    toast(`Added ${layer.cels.size} pictures as frames on a new layer` + (skipped ? ` (${skipped} couldn't be opened).` : '.') +
+      ' Press Play to watch.', 4000);
+  }
+
+  // Paste a picture (Ctrl+V / Cmd+V).
+  document.addEventListener('paste', (e) => {
+    if (e.target.matches && e.target.matches('input[type=text]')) return;
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])].filter(isImageFile);
+    if (!files.length) return;
+    e.preventDefault();
+    insertImages(files.slice(0, 1), 'frame');
+  });
+
+  // Drag pictures from your computer onto the canvas.
+  let dragDepth = 0;
+  const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+  stage.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    stage.classList.add('drop-target');
+  });
+  stage.addEventListener('dragover', (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+  stage.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) stage.classList.remove('drop-target');
+  });
+  stage.addEventListener('drop', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    stage.classList.remove('drop-target');
+    const files = [...e.dataTransfer.files].filter(isImageFile);
+    // A project file dropped on the canvas opens it.
+    const proj = [...e.dataTransfer.files].find((f) => /\.anim$/i.test(f.name));
+    if (proj && !files.length) { toast('To open a project, use "Open file" in the menu.'); return; }
+    insertImages(files, files.length > 1 ? 'sequence' : 'frame');
+  });
+  // Dropping a file anywhere else shouldn't make the browser leave the app.
+  window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
+
+  // ---------------------------------------------------------------------------
   // Keyboard shortcuts
   // ---------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {

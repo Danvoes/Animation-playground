@@ -279,6 +279,15 @@
     </div>
     <p class="hint" id="p-status">Your work is saved in this browser automatically.</p>
     <input type="file" id="p-file" hidden>
+    <h2 class="gap">Insert image</h2>
+    <div class="mini-grid">
+      <button class="mini" id="i-frame" title="Add a picture to this frame on a new layer, then move and resize it">On this frame</button>
+      <button class="mini" id="i-bg" title="Add a picture behind everything, on every frame">As background</button>
+      <button class="mini" id="i-seq" style="grid-column: span 2" title="Choose several pictures; each one becomes a frame">Several pictures as frames</button>
+    </div>
+    <p class="hint">Use PNG or JPG pictures. You can also drag pictures onto the canvas, or paste one
+      (Ctrl+V). Tip: to trace over a picture, lower its layer's opacity in Layers.</p>
+    <input type="file" id="i-file" accept="image/*" hidden>
     <h2 class="gap">View</h2>
     <div class="mini-grid three">
       <button class="mini" id="m-fit" title="Shortcut: 0">Fit to screen</button>
