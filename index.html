@@ -17,7 +17,7 @@
       <button class="tb" id="btn-export" data-panel="panel-export" title="Export a video of your animation">
         <svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>
       </button>
-      <button class="project-title" id="project-title" data-panel="panel-menu" title="Project name and save status">
+      <button class="project-title" id="project-title" title="My projects (all your projects)">
         <span id="title-name">Untitled</span>
         <span class="save-status" id="save-status"></span>
       </button>
@@ -339,6 +339,23 @@
     <button class="mini wide" id="ex-png" title="Save the frame you're on as a PNG picture">Save this frame as a picture (PNG)</button>
   </div>
 
+  <!-- The project gallery -->
+  <div id="gallery" hidden>
+    <div class="gallery-box">
+      <div class="gallery-head">
+        <div class="brand" aria-hidden="true"><span>P</span><span>l</span><span>a</span><span>y</span><span>g</span><span>r</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
+        <h2>My projects</h2>
+        <div class="gallery-actions">
+          <button class="mini primary" id="g-new">+ New project</button>
+          <button class="mini" id="g-import" title="Open a .anim project file">Open a file…</button>
+          <button class="icon-toggle" id="g-close" title="Close (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+        </div>
+      </div>
+      <div class="gallery-grid" id="g-grid"></div>
+      <p class="hint" id="g-foot"></p>
+    </div>
+  </div>
+
   <!-- Time-lapse replay -->
   <div id="tl-overlay" hidden>
     <div class="tl-box">
@@ -402,10 +419,11 @@
     <div class="brand brand-menu" aria-hidden="true"><span>P</span><span>l</span><span>a</span><span>y</span><span>g</span><span>r</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
     <h2>Project</h2>
     <input type="text" class="text-input" id="p-name" maxlength="60" placeholder="Untitled" aria-label="Project name">
-    <div class="mini-grid three">
-      <button class="mini" id="p-save" title="Save the whole project as a file (Ctrl+S)">Save to file</button>
-      <button class="mini" id="p-open" title="Open a project file (Ctrl+O)">Open file</button>
-      <button class="mini" id="p-new" title="Start a new, empty project">New</button>
+    <div class="mini-grid">
+      <button class="mini primary" id="p-gallery" title="See all your projects">My projects</button>
+      <button class="mini" id="p-new" title="Start a new, empty project (this one stays in My projects)">+ New project</button>
+      <button class="mini" id="p-save" title="Save the whole project as a file, for backups or other devices (Ctrl+S)">Save to file</button>
+      <button class="mini" id="p-open" title="Open a project file as a new project (Ctrl+O)">Open file</button>
     </div>
     <p class="hint" id="p-status">Your work is saved in this browser automatically.</p>
     <input type="file" id="p-file" hidden>

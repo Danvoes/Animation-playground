@@ -2705,7 +2705,8 @@
   // ---------------------------------------------------------------------------
   // Saving and opening projects
   // ---------------------------------------------------------------------------
-  const project = { name: 'Untitled', fileHandle: null };
+  // id: which project in the gallery this is (each project is saved under its own id).
+  const project = { id: null, name: 'Untitled', fileHandle: null, createdAt: Date.now() };
   let storageOK = false;    // can we save in this browser?
   let restoring = true;     // don't save until the last project has been loaded
   let saveTimer = null, saving = false, saveAgain = false, unsaved = false;
@@ -2827,7 +2828,7 @@
   // Save the project in this browser. Only drawings that changed are re-saved.
   async function autosave() {
     saveTimer = null;
-    if (!storageOK || restoring) return;
+    if (!storageOK || restoring || !project.id) return;
     if (saving) { saveAgain = true; return; }
     if (busy() || transform) { scheduleAutosave(); return; } // wait until you finish
     saving = true;
@@ -2857,7 +2858,12 @@
         keep.add(rk);
         if (lastSaved.get(rk) !== clip) puts.push([rk, clip, { audio: true, blob: clip.blob }]);
       }
-      await ProjectStorage.saveProject(meta, puts.map(([rk, , blob]) => [rk, blob]), keep);
+      const pid = project.id;
+      const summary = {
+        name: project.name, createdAt: project.createdAt, updatedAt: Date.now(),
+        frames: doc.frames.length, duration: buildTimeline().total, thumb: await makeThumb(),
+      };
+      await ProjectStorage.saveProject(pid, meta, puts.map(([rk, , blob]) => [rk, blob]), keep, summary);
       for (const [rk, cel] of puts) lastSaved.set(rk, cel);
       for (const rk of [...lastSaved.keys()]) if (!keep.has(rk)) lastSaved.delete(rk);
       if (!saveTimer && !saveAgain) { unsaved = false; setSaveStatus('saved'); }
@@ -3033,7 +3039,88 @@
     fitView();
   }
 
-  // On start: bring back the project from last time.
+  // ---- The project gallery: many projects, each saved on its own ----
+  const newPid = () => 'P' + Date.now() + String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  const thumbCanvas = makeCanvas(320, 180);
+  // A small picture of frame 1 for the gallery.
+  async function makeThumb() {
+    drawFrame(thumbCanvas.getContext('2d'), doc.frames[0], { w: 320, h: 180 });
+    if (window.OffscreenCanvas) {
+      try {
+        const oc = new OffscreenCanvas(320, 180);
+        oc.getContext('2d').drawImage(thumbCanvas, 0, 0);
+        return await oc.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
+      } catch (_) { /* use the normal way */ }
+    }
+    return new Promise((res) => thumbCanvas.toBlob((b2) => res(b2), 'image/jpeg', 0.8));
+  }
+  // Finish saving the project on screen before switching to another one.
+  async function flushSave() {
+    if (partEdit) finishPartEdit(true);
+    if (transform) applyTransform();
+    if (!storageOK || !project.id) return;
+    if (saveTimer || unsaved) { clearTimeout(saveTimer); saveTimer = null; await autosave(); }
+    while (saving) await new Promise((r) => setTimeout(r, 30));
+  }
+  // Read a saved project's pictures, sounds and parts from browser storage.
+  const storedFetchers = (pid) => [
+    async (layerId, key) => {
+      const rec = await ProjectStorage.getRecord(pid, `${layerId}|${key}`);
+      return rec ? decodeCel(rec) : null;
+    },
+    async (A) => { const rec = await ProjectStorage.getRecord(pid, `audio|${A.id}`); return rec && rec.blob; },
+    async (P) => { const rec = await ProjectStorage.getRecord(pid, `part|${P.id}`); return rec && rec.blob; },
+  ];
+
+  async function openProjectById(pid) {
+    await flushSave();
+    const meta = await ProjectStorage.getMeta(pid);
+    if (!meta || !meta.layers) throw new Error('That project could not be found.');
+    restoring = true; // don't save while it's loading
+    try {
+      await loadProject(meta, ...storedFetchers(pid));
+    } finally {
+      restoring = false;
+    }
+    project.id = pid;
+    const sum = (await ProjectStorage.listProjects()).find((x) => x.id === pid);
+    project.createdAt = (sum && sum.createdAt) || Date.now();
+    // What's on screen now matches what's saved.
+    lastSaved.clear();
+    for (const layer of doc.layers) layer.cels.forEach((cel, key) => lastSaved.set(`${layer.id}|${key}`, cel));
+    for (const clip of audioClips) lastSaved.set(`audio|${clip.id}`, clip);
+    for (const part of doc.parts.values()) lastSaved.set(`part|${part.id}`, part.canvas);
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    unsaved = false;
+    setSaveStatus('saved');
+    tlMemory.length = 0;
+    try { tlCount = (await ProjectStorage.tlKeys(pid)).length; } catch (_) { tlCount = 0; }
+    ProjectStorage.setApp('last', pid).catch(() => {});
+    // Projects from older versions don't have a gallery picture yet.
+    if (sum && !sum.thumb) ProjectStorage.updateSummary(pid, { thumb: await makeThumb(), frames: doc.frames.length }).catch(() => {});
+  }
+
+  // Start a brand-new project (the one on screen stays in the gallery).
+  async function startBlankProject(name) {
+    restoring = true;
+    try {
+      await loadProject({
+        name: name || 'Untitled', fps: doc.fps, playMode: state.playMode, layerCounter: 1,
+        frames: [{ id: 'f1', hold: 1 }], layers: [{ id: 'l1', name: 'Layer 1', cels: [] }],
+      }, async () => null);
+    } finally {
+      restoring = false;
+    }
+    project.id = storageOK ? newPid() : null;
+    project.createdAt = Date.now();
+    lastSaved.clear();
+    tlMemory.length = 0;
+    tlCount = 0;
+    if (storageOK) { autosaveNow(); ProjectStorage.setApp('last', project.id).catch(() => {}); }
+  }
+
+  // On start: move an older single project into the gallery, then open the last project.
   async function restoreProject() {
     try {
       await ProjectStorage.openDB();
@@ -3044,34 +3131,159 @@
       return;
     }
     try {
-      const meta = await ProjectStorage.get('meta', 'current');
-      if (meta && meta.layers) {
-        await loadProject(meta, async (layerId, key) => {
-          const rec = await ProjectStorage.get('cels', `${layerId}|${key}`);
-          return rec ? decodeCel(rec) : null;
-        }, async (A) => {
-          const rec = await ProjectStorage.get('cels', `audio|${A.id}`);
-          return rec && rec.blob;
-        }, async (P) => {
-          const rec = await ProjectStorage.get('cels', `part|${P.id}`);
-          return rec && rec.blob;
-        });
-        // What's on screen now matches what's saved.
-        for (const layer of doc.layers) layer.cels.forEach((cel, key) => lastSaved.set(`${layer.id}|${key}`, cel));
-        for (const clip of audioClips) lastSaved.set(`audio|${clip.id}`, clip);
-        for (const part of doc.parts.values()) lastSaved.set(`part|${part.id}`, part.canvas);
-        toast('Welcome back! Your last project is open.', 2200);
+      await ProjectStorage.migrateLegacy(newPid());
+      const list = await ProjectStorage.listProjects();
+      const last = await ProjectStorage.getApp('last');
+      const target = list.find((x) => x.id === last) || list[0];
+      if (target) {
+        await openProjectById(target.id);
+        toast(list.length > 1
+          ? `Welcome back! "${project.name}" is open. Your other projects are in My projects.`
+          : 'Welcome back! Your last project is open.', 2600);
+      } else {
+        restoring = false;
+        await startBlankProject();
       }
     } catch (err) {
       console.warn('Restore failed', err);
-      toast('Your last project couldn\'t be opened. Starting fresh.');
+      toast('Your last project couldn\'t be opened. Starting a new one.');
+      restoring = false;
+      await startBlankProject();
     }
     restoring = false;
     unsaved = false;
     setSaveStatus('saved');
-    try { tlCount = (await ProjectStorage.tlKeys()).length; } catch (_) { tlCount = 0; }
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   }
+
+  // ---- The gallery screen ----
+  const galleryEl = $('#gallery');
+  let galleryURLs = [];
+  const galleryOpen = () => !galleryEl.hidden;
+  function relTime(ts) {
+    const sec = (Date.now() - ts) / 1000;
+    if (sec < 60) return 'just now';
+    if (sec < 3600) return `${Math.floor(sec / 60)} min ago`;
+    if (sec < 86400) { const h = Math.floor(sec / 3600); return `${h} hour${h === 1 ? '' : 's'} ago`; }
+    if (sec < 172800) return 'yesterday';
+    return new Date(ts).toLocaleDateString();
+  }
+  async function openGallery() {
+    if (partEdit) { toast('Tap Done to finish editing the part first.'); return; }
+    if (!storageOK) {
+      toast('This browser won\'t let Playground keep projects here (for example in a private window). Use "Save to file" instead.');
+      return;
+    }
+    closePanels();
+    stopPlay();
+    galleryEl.hidden = false;
+    $('#g-grid').innerHTML = '<p class="hint">Loading your projects…</p>';
+    await flushSave(); // so this project's card is up to date
+    await buildGallery();
+  }
+  function closeGallery() {
+    galleryEl.hidden = true;
+    galleryURLs.forEach((u) => URL.revokeObjectURL(u));
+    galleryURLs = [];
+  }
+  async function buildGallery() {
+    const grid = $('#g-grid');
+    const list = await ProjectStorage.listProjects();
+    galleryURLs.forEach((u) => URL.revokeObjectURL(u));
+    galleryURLs = [];
+    grid.innerHTML = '';
+    for (const pj of list) {
+      const current = pj.id === project.id;
+      const card = document.createElement('div');
+      card.className = 'g-card' + (current ? ' current' : '');
+      const open = document.createElement('button');
+      open.className = 'g-open';
+      open.title = current ? 'Back to this project' : `Open "${pj.name}"`;
+      if (pj.thumb) {
+        const url = URL.createObjectURL(pj.thumb);
+        galleryURLs.push(url);
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = '';
+        open.appendChild(img);
+      } else {
+        open.innerHTML = '<span class="g-empty">No picture yet</span>';
+      }
+      if (current) { const b = document.createElement('span'); b.className = 'g-badge'; b.textContent = 'Open now'; open.appendChild(b); }
+      open.addEventListener('click', async () => {
+        if (current) { closeGallery(); return; }
+        toast('Opening…', 1200);
+        try {
+          await openProjectById(pj.id);
+          closeGallery();
+          toast(`Opened "${project.name}".`);
+        } catch (err) {
+          console.warn(err);
+          toast('Sorry, that project couldn\'t be opened.');
+        }
+      });
+      const name = document.createElement('div');
+      name.className = 'g-name';
+      name.textContent = pj.name || 'Untitled';
+      name.title = pj.name || 'Untitled';
+      const info = document.createElement('div');
+      info.className = 'g-meta';
+      const frames = pj.frames || 1;
+      info.textContent = `Edited ${relTime(pj.updatedAt || pj.createdAt || Date.now())} · ${frames} frame${frames === 1 ? '' : 's'}` +
+        (pj.duration && frames > 1 ? ` · ${pj.duration.toFixed(1)} s` : '');
+      const tools = document.createElement('div');
+      tools.className = 'g-tools';
+      const tool = (label, title, fn, cls) => {
+        const b = document.createElement('button');
+        b.className = 'mini' + (cls ? ' ' + cls : '');
+        b.textContent = label;
+        b.title = title;
+        b.addEventListener('click', fn);
+        tools.appendChild(b);
+      };
+      tool('Rename', 'Rename this project', async () => {
+        const n = prompt('Rename this project:', pj.name || 'Untitled');
+        if (n === null || !n.trim()) return;
+        const nm = n.trim().slice(0, 60);
+        if (current) { project.name = nm; updateTitle(); autosaveNow(); await flushSave(); }
+        else await ProjectStorage.renameProject(pj.id, nm);
+        buildGallery();
+      });
+      tool('Duplicate', 'Make a copy of this project', async () => {
+        if (current) await flushSave();
+        await ProjectStorage.duplicateProject(pj.id, newPid(), `${pj.name || 'Untitled'} copy`);
+        toast(`Made a copy of "${pj.name}".`);
+        buildGallery();
+      });
+      tool('Delete', 'Delete this project', async () => {
+        if (!confirm(`Delete "${pj.name || 'Untitled'}"?\n\nThis can't be undone. (Tip: use "Save to file" first if you might want it back.)`)) return;
+        if (current) { clearTimeout(saveTimer); saveTimer = null; unsaved = false; project.id = null; }
+        await ProjectStorage.deleteProject(pj.id);
+        if (current) {
+          // Open the next most recent project, or start a fresh one.
+          const rest = (await ProjectStorage.listProjects());
+          if (rest.length) await openProjectById(rest[0].id); else await startBlankProject();
+        }
+        toast(`Deleted "${pj.name || 'Untitled'}".`);
+        buildGallery();
+      }, 'danger');
+      card.append(open, name, info, tools);
+      grid.appendChild(card);
+    }
+    const foot = $('#g-foot');
+    foot.textContent = `${list.length} project${list.length === 1 ? '' : 's'}, saved in this browser on this device. ` +
+      'Use "Save to file" in the menu for backups or to move a project to another device.';
+    if (navigator.storage && navigator.storage.estimate) {
+      navigator.storage.estimate().then((e) => {
+        if (e && e.usage) foot.textContent += ` Using about ${Math.max(1, Math.round(e.usage / 1048576))} MB.`;
+      }).catch(() => {});
+    }
+  }
+  $('#g-close').addEventListener('click', closeGallery);
+  $('#g-new').addEventListener('click', () => newProject());
+  $('#g-import').addEventListener('click', () => openFile());
+  $('#p-gallery').addEventListener('click', openGallery);
+  $('#project-title').addEventListener('click', openGallery);
 
   const safeFileName = (name) => (name.replace(/[\\/:*?"<>|]+/g, '').trim() || 'Untitled');
 
@@ -3121,12 +3333,11 @@
     }
   }
 
-  // Open a .anim file.
+  // Open a .anim file. It becomes a new project in the gallery (nothing is replaced).
   const fileInput = $('#p-file');
   function openFile() {
     if (busy()) return;
-    const ok = confirm('Open a project file?\n\nIt will replace the project on screen. To keep this one, press Cancel and use "Save to file" first.');
-    if (!ok) return;
+    if (!storageOK && !confirm('Open a project file?\n\nIt will replace the project on screen. To keep this one, press Cancel and use "Save to file" first.')) return;
     closePanels();
     fileInput.value = '';
     fileInput.click();
@@ -3138,18 +3349,30 @@
     try {
       const meta = JSON.parse(await file.text());
       if (!meta || meta.app !== 'animation-playground') throw new Error('not ours');
-      await loadProject(meta, async (layerId, key, L) => {
-        const rec = L.cels && L.cels[key];
-        return rec ? decodeCel(rec) : null;
-      }, async (A) => {
-        if (typeof A.data !== 'string' || !/^data:(audio|video)\//.test(A.data)) return null;
-        return (await fetch(A.data)).blob();
-      }, async (P) => (typeof P.png === 'string' && /^data:image\/png;base64,/.test(P.png) ? P.png : null));
+      await flushSave();
+      restoring = true;
+      try {
+        await loadProject(meta, async (layerId, key, L) => {
+          const rec = L.cels && L.cels[key];
+          return rec ? decodeCel(rec) : null;
+        }, async (A) => {
+          if (typeof A.data !== 'string' || !/^data:(audio|video)\//.test(A.data)) return null;
+          return (await fetch(A.data)).blob();
+        }, async (P) => (typeof P.png === 'string' && /^data:image\/png;base64,/.test(P.png) ? P.png : null));
+      } finally {
+        restoring = false;
+      }
       if (!meta.name) project.name = file.name.replace(/\.(anim|json)$/i, '') || 'Untitled';
+      project.id = storageOK ? newPid() : null;
+      project.createdAt = Date.now();
+      lastSaved.clear();
+      tlMemory.length = 0;
+      tlCount = 0;
       updateTitle();
-      tlReset();
       autosaveNow();
-      toast(`Opened "${project.name}".`);
+      if (storageOK) ProjectStorage.setApp('last', project.id).catch(() => {});
+      closeGallery();
+      toast(`Opened "${project.name}" as a new project.`);
     } catch (err) {
       console.warn(err);
       toast('That file couldn\'t be opened. Is it a Playground project (.anim)?');
@@ -3158,17 +3381,18 @@
   function autosaveNow() {
     scheduleAutosave();
     clearTimeout(saveTimer);
+    saveTimer = null;
     autosave();
   }
 
-  function newProject() {
+  async function newProject() {
     if (busy()) return;
-    const ok = confirm('Start a new, empty project?\n\nThe project on screen will be replaced. To keep it, press Cancel and use "Save to file" first.');
-    if (!ok) return;
-    loadProject({
-      name: 'Untitled', fps: doc.fps, playMode: state.playMode, layerCounter: 1,
-      frames: [{ id: 'f1', hold: 1 }], layers: [{ id: 'l1', name: 'Layer 1', cels: [] }],
-    }, async () => null).then(() => { tlReset(); autosaveNow(); toast('New project started.'); });
+    if (!storageOK && !confirm('Start a new, empty project?\n\nThis browser can\'t keep several projects, so the one on screen will be replaced. To keep it, press Cancel and use "Save to file" first.')) return;
+    closePanels();
+    await flushSave();
+    await startBlankProject();
+    closeGallery();
+    toast(storageOK ? 'New project started. Your other projects are in My projects.' : 'New project started.');
   }
 
   $('#p-save').addEventListener('click', saveToFile);
@@ -3741,13 +3965,14 @@
     try {
       const blob = await snapshotBlob();
       if (storageOK) {
-        await ProjectStorage.tlAdd(blob);
+        if (!project.id) return;
+        await ProjectStorage.tlAdd(project.id, blob);
         tlCount++;
         // Very long sessions: keep every other snapshot so it doesn't grow forever.
         if (tlCount > TL_MAX) {
-          const keys = await ProjectStorage.tlKeys();
+          const keys = await ProjectStorage.tlKeys(project.id);
           await ProjectStorage.tlDelete(keys.filter((_, i) => i % 2 === 1 && i < keys.length - 1));
-          tlCount = (await ProjectStorage.tlKeys()).length;
+          tlCount = (await ProjectStorage.tlKeys(project.id)).length;
         }
       } else {
         tlMemory.push(blob);
@@ -3764,13 +3989,13 @@
     clearTimeout(tlTimer);
     tlMemory.length = 0;
     tlCount = 0;
-    if (storageOK) { try { await ProjectStorage.tlClear(); } catch (_) { /* ignore */ } }
+    if (storageOK && project.id) { try { await ProjectStorage.tlClear(project.id); } catch (_) { /* ignore */ } }
   }
   async function tlList() {
-    return storageOK ? ProjectStorage.tlKeys() : tlMemory.map((_, i) => i);
+    return storageOK && project.id ? ProjectStorage.tlKeys(project.id) : tlMemory.map((_, i) => i);
   }
   async function tlImage(keys, i) {
-    const blob = storageOK ? await ProjectStorage.tlGet(keys[i]) : tlMemory[keys[i]];
+    const blob = storageOK && project.id ? await ProjectStorage.tlGet(keys[i]) : tlMemory[keys[i]];
     return blob ? ProjectStorage.toImage(blob) : null;
   }
   function refreshTimelapseInfo() {
@@ -4827,6 +5052,10 @@
     if (exporting) {
       e.preventDefault();
       if (e.key === 'Escape') cancelExport();
+      return;
+    }
+    if (galleryOpen()) {
+      if (e.key === 'Escape') { e.preventDefault(); closeGallery(); }
       return;
     }
     if (tlView) {

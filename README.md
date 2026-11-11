@@ -10,16 +10,20 @@ It runs entirely in your web browser. There is nothing to install.
 
 Use an up-to-date Chrome, Edge, Firefox or Safari.
 
-## Saving your work
+## Saving your work and your projects
 
-- **Automatic:** your project is saved in this browser a moment after every change
-  ("Saved" appears next to the project name). Close the page and open it again later:
-  your project comes back exactly as you left it.
-- **Save to file** (menu, or Ctrl+S): saves the whole project as one `.anim` file, for
-  backups or moving it to another computer or tablet. Keep copies of important work this way,
-  because clearing your browser's data also clears what it saved automatically.
-- **Open file** (menu, or Ctrl+O): opens a `.anim` file.
-- **New:** starts an empty project. Give your project a name in the menu.
+- **My projects (gallery):** tap the project name at the top (or **My projects** in the menu) to see
+  all your projects with a picture, when you last edited them and how many frames they have.
+  Tap one to open it. Each card can be renamed, duplicated or deleted.
+- **+ New project** starts a fresh project; the one you were working on stays in the gallery.
+- **Automatic saving:** every project saves itself in this browser a moment after each change
+  ("Saved" appears next to the project name), along with its time-lapse, sounds, palettes and puppets.
+  When you come back, the project you had open last opens again.
+- **Save to file** (menu, or Ctrl+S): saves the project as one `.anim` file, for backups or moving it
+  to another computer or tablet. **Open file** (Ctrl+O) adds a `.anim` file to your gallery as a new project.
+- No login is needed: projects live in this browser on this device. Clearing the browser's data
+  also clears them, so keep important projects as files too (a cloud folder like iCloud Drive or
+  Google Drive is a good place for them).
 
 Undo history isn't kept when you close the page.
 
