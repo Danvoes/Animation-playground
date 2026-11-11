@@ -236,6 +236,7 @@
     else markAllThumbs();
     goFrame(doc.frame);
     layersChanged();
+    audioChanged();
   }
 
   // Checks before changing a layer's pixels.
@@ -1528,9 +1529,13 @@
     thumbsQueued = true;
     requestAnimationFrame(() => {
       thumbsQueued = false;
+      const tl = audioClips.length ? buildTimeline() : null;
       for (const f of dirtyThumbs) {
         const cell = cells.get(f);
-        if (cell) drawFrame(cell.canvas.getContext('2d'), f, { w: cell.canvas.width, h: cell.canvas.height });
+        if (!cell) continue;
+        const g = cell.canvas.getContext('2d');
+        drawFrame(g, f, { w: cell.canvas.width, h: cell.canvas.height });
+        if (tl) drawThumbWave(g, f, tl, cell.canvas.width, cell.canvas.height);
       }
       dirtyThumbs.clear();
     });
@@ -1724,6 +1729,7 @@
       redo() { frame.hold = value; },
     });
     updateFrameUI();
+    if (audioClips.length) markAllThumbs();
   }
 
   // Frame options panel (tap the selected frame)
@@ -1821,42 +1827,93 @@
   // Playback
   // ---------------------------------------------------------------------------
   let playing = false;
-  let lastTick = 0, elapsed = 0;
-  let playDir = 1, beatsLeft = 1;
+  let playMode = 'loop';
+  // Ping-pong counts beats; Loop and Once follow a clock (the sound card's clock
+  // when there is sound, so pictures and sound stay in step).
+  let playDir = 1, beatsLeft = 1, lastTick = 0, elapsed = 0;
+  let timeline = null, clock0 = 0, anim0 = 0, scheduledLoop = -1, useAudioClock = false;
+  let sounds = [];
+  let recording = null;
 
-  function startPlay() {
+  // When each frame starts (in seconds) and how long the whole animation is.
+  function buildTimeline() {
+    const starts = [];
+    let t = 0;
+    for (const f of doc.frames) { starts.push(t); t += (f.hold || 1) / doc.fps; }
+    return { starts, total: t };
+  }
+  function frameAtTime(tl, t) {
+    let lo = 0, hi = tl.starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (tl.starts[mid] <= t) lo = mid; else hi = mid - 1;
+    }
+    return lo;
+  }
+  const timeOfFrame = (frame) => buildTimeline().starts[doc.frames.indexOf(frame)] || 0;
+  const clockNow = () => (useAudioClock ? SoundEngine.getCtx().currentTime : performance.now() / 1000);
+  const audibleClips = () => audioClips.filter((c) => !c.muted);
+
+  function startPlay(opts) {
+    opts = opts || {};
     if (playing || busy()) return;
     if (transform) applyTransform();
     if (doc.frames.length < 2) { toast('Add more frames to play an animation.'); return; }
     closePanels();
+    playMode = opts.record ? 'once' : state.playMode;
     // "Once" starts from the beginning if you're on the last frame.
-    if (state.playMode === 'once' && frameIndex() === doc.frames.length - 1) goFrame(doc.frames[0]);
+    if (playMode === 'once' && !opts.record && frameIndex() === doc.frames.length - 1) goFrame(doc.frames[0]);
     playing = true;
-    playDir = 1;
-    beatsLeft = doc.frame.hold || 1;
-    elapsed = 0;
-    lastTick = performance.now();
     cursorEl.style.display = 'none';
     updatePlayButton();
     refreshOnion();
-    requestAnimationFrame(playTick);
-  }
-  // Go to the next frame according to the playback mode.
-  function advance() {
-    const n = doc.frames.length;
-    let i = frameIndex();
-    if (state.playMode === 'loop') i = (i + 1) % n;
-    else if (state.playMode === 'pingpong') {
-      if (i + playDir >= n || i + playDir < 0) playDir = -playDir;
-      i += playDir;
-    } else {
-      if (i + 1 >= n) { stopPlay(); return; }
-      i++;
+    if (playMode === 'pingpong') {
+      if (audibleClips().length) toast('Sound plays in Loop and Once modes, not Ping-pong.', 2500);
+      playDir = 1;
+      beatsLeft = doc.frame.hold || 1;
+      elapsed = 0;
+      lastTick = performance.now();
+      requestAnimationFrame(pingPongTick);
+      return;
     }
-    goFrame(doc.frames[i]);
-    beatsLeft = doc.frames[i].hold || 1;
+    timeline = buildTimeline();
+    anim0 = timeline.starts[frameIndex()];
+    const ctx = audibleClips().length ? SoundEngine.getCtx() : null;
+    useAudioClock = !!ctx;
+    if (ctx && ctx.state === 'suspended') ctx.resume();
+    clock0 = clockNow() + (useAudioClock ? 0.06 : 0); // a tiny head start so the first sound isn't clipped
+    scheduledLoop = -1;
+    sounds = [];
+    scheduleLoop(0);
+    requestAnimationFrame(clockTick);
   }
-  function playTick(t) {
+  // Start the sounds for one pass through the animation.
+  function scheduleLoop(k) {
+    scheduledLoop = k;
+    if (!useAudioClock) return;
+    const from = k === 0 ? anim0 : 0;
+    const when = k === 0 ? clock0 : clock0 + k * timeline.total - anim0;
+    sounds = sounds.slice(-40).concat(SoundEngine.schedule(audibleClips(), from, timeline.total, when));
+  }
+  function clockTick() {
+    if (!playing) return;
+    const T = timeline.total;
+    let t = Math.max(anim0, anim0 + (clockNow() - clock0));
+    if (playMode === 'loop') {
+      const k = Math.floor(t / T);
+      // Line up the next pass's sound a moment before it's needed.
+      if (scheduledLoop === k && (k + 1) * T - t < 0.3) scheduleLoop(k + 1);
+      t -= k * T;
+    } else if (t >= T) {
+      goFrame(doc.frames[doc.frames.length - 1]);
+      stopPlay();
+      return;
+    }
+    const f = doc.frames[frameAtTime(timeline, t)];
+    if (f !== doc.frame) goFrame(f);
+    requestAnimationFrame(clockTick);
+  }
+  function pingPongTick(t) {
     if (!playing) return;
     elapsed = Math.min(elapsed + (t - lastTick), 1000);
     lastTick = t;
@@ -1864,26 +1921,42 @@
     while (playing && elapsed >= beat) {
       elapsed -= beat;
       beatsLeft--;
-      if (beatsLeft <= 0) advance();
+      if (beatsLeft <= 0) {
+        const n = doc.frames.length;
+        let i = frameIndex();
+        if (i + playDir >= n || i + playDir < 0) playDir = -playDir;
+        i += playDir;
+        goFrame(doc.frames[i]);
+        beatsLeft = doc.frames[i].hold || 1;
+      }
     }
-    if (playing) requestAnimationFrame(playTick);
+    if (playing) requestAnimationFrame(pingPongTick);
   }
   function stopPlay() {
+    if (recording) stopRecording();
     if (!playing) return;
     playing = false;
+    SoundEngine.stopAll(sounds);
+    sounds = [];
     updatePlayButton();
     refreshOnion();
     refreshLayersPanel();
   }
-  function togglePlay() { if (playing) stopPlay(); else startPlay(); }
+  function togglePlay() {
+    if (recording) { stopPlay(); return; }
+    if (playing) stopPlay(); else startPlay();
+  }
   function updatePlayButton() {
-    $('#play-label').textContent = playing ? 'Stop' : 'Play';
-    $('#play-icon').innerHTML = playing ? '<rect x="6" y="6" width="12" height="12" rx="1.5"/>' : '<path d="M7 4.5v15l12-7.5z"/>';
-    $('#btn-play').classList.toggle('active', playing);
+    const stop = playing || !!recording;
+    $('#play-label').textContent = recording ? 'Stop rec.' : stop ? 'Stop' : 'Play';
+    $('#play-icon').innerHTML = recording ? '<circle cx="12" cy="12" r="6" fill="currentColor"/>'
+      : stop ? '<rect x="6" y="6" width="12" height="12" rx="1.5"/>' : '<path d="M7 4.5v15l12-7.5z"/>';
+    $('#btn-play').classList.toggle('active', stop && !recording);
+    $('#btn-play').classList.toggle('recording', !!recording);
   }
   $('#btn-play').addEventListener('click', togglePlay);
 
-  $('#fps').addEventListener('change', () => scheduleAutosave());
+  $('#fps').addEventListener('change', () => { scheduleAutosave(); if (audioClips.length) markAllThumbs(); });
   $('#fps').addEventListener('input', (e) => {
     doc.fps = +e.target.value;
     $('#fps-out').textContent = doc.fps + ' fps';
@@ -2336,6 +2409,7 @@
     if (panel.id === 'panel-brush') drawBrushPreviews();
     if (panel.id === 'panel-color') picker.markPrevious();
     if (panel.id === 'panel-frame') refreshFramePanel();
+    if (panel.id === 'panel-audio') buildAudioList();
     if (panel.id === 'panel-menu') $('#p-name').value = project.name === 'Untitled' ? '' : project.name;
     const r = anchor.getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
@@ -2614,6 +2688,9 @@
         opacity: l.opacity, blend: l.blend,
         cels: [...l.cels.keys()].filter((k) => k === 'static' || frameIds.has(k)),
       })),
+      audio: audioClips.map((c) => ({
+        id: c.id, name: c.name, offset: c.offset, skip: c.skip, volume: c.volume, muted: c.muted, type: c.blob.type,
+      })),
       activeLayer: doc.active.id,
       currentFrame: doc.frame.id,
       layerCounter,
@@ -2653,6 +2730,11 @@
           }
         }
       }
+      for (const clip of audioClips) {
+        const rk = `audio|${clip.id}`;
+        keep.add(rk);
+        if (lastSaved.get(rk) !== clip) puts.push([rk, clip, { audio: true, blob: clip.blob }]);
+      }
       await ProjectStorage.saveProject(meta, puts.map(([rk, , blob]) => [rk, blob]), keep);
       for (const [rk, cel] of puts) lastSaved.set(rk, cel);
       for (const rk of [...lastSaved.keys()]) if (!keep.has(rk)) lastSaved.delete(rk);
@@ -2678,7 +2760,7 @@
    * Replace the current project with a saved one.
    * meta: the project description; fetchCel(layerId, key) -> picture (or null).
    */
-  async function loadProject(meta, fetchCel) {
+  async function loadProject(meta, fetchCel, fetchAudio) {
     if (!meta || !Array.isArray(meta.frames) || !Array.isArray(meta.layers) ||
         !meta.frames.length || !meta.layers.length) {
       throw new Error('This file doesn\'t look like an Animation Playground project.');
@@ -2722,6 +2804,23 @@
       layers.push(layer);
     }
     frames.forEach((f) => { delete f.oldId; });
+    const clips = [];
+    let maxA = 0;
+    for (const A of (Array.isArray(meta.audio) ? meta.audio : []).slice(0, MAX_CLIPS)) {
+      try {
+        const blob = fetchAudio ? await fetchAudio(A) : null;
+        if (!blob) continue;
+        const id = /^a\d+$/.test(String(A.id)) && !clips.some((c) => c.id === String(A.id)) ? String(A.id) : null;
+        const clip = await makeClip(blob, String(A.name || 'Sound').slice(0, 60), +A.offset || 0, id);
+        clip.skip = clamp(+A.skip || 0, 0, Math.max(0, clip.buffer.duration - 0.1));
+        clip.volume = Number.isFinite(+A.volume) ? clamp(+A.volume, 0, 1.5) : 1;
+        clip.muted = !!A.muted;
+        clips.push(clip);
+        maxA = Math.max(maxA, num(clip.id));
+      } catch (err) {
+        console.warn('A sound could not be loaded', err);
+      }
+    }
 
     // Swap it in.
     if (transform) cancelTransform();
@@ -2730,6 +2829,9 @@
     closePanels();
     doc.layers = layers;
     doc.frames = frames;
+    audioClips.length = 0;
+    audioClips.push(...clips);
+    clipIds = Math.max(maxA, clips.length);
     doc.active = layers.find((l) => l.id === String(meta.activeLayer)) || layers[layers.length - 1];
     doc.frame = frames.find((f) => f.id === idMap.get(String(meta.currentFrame))) || frames[0];
     doc.fps = clamp(Math.round(+meta.fps) || 12, 1, 30);
@@ -2748,6 +2850,7 @@
     goFrame(doc.frame);
     layersChanged();
     history.onChange();
+    audioChanged();
     syncUI();
     fitView();
   }
@@ -2768,9 +2871,13 @@
         await loadProject(meta, async (layerId, key) => {
           const rec = await ProjectStorage.get('cels', `${layerId}|${key}`);
           return rec ? decodeCel(rec) : null;
+        }, async (A) => {
+          const rec = await ProjectStorage.get('cels', `audio|${A.id}`);
+          return rec && rec.blob;
         });
         // What's on screen now matches what's saved.
         for (const layer of doc.layers) layer.cels.forEach((cel, key) => lastSaved.set(`${layer.id}|${key}`, cel));
+        for (const clip of audioClips) lastSaved.set(`audio|${clip.id}`, clip);
         toast('Welcome back! Your last project is open.', 2200);
       }
     } catch (err) {
@@ -2804,6 +2911,10 @@
           pics[key] = { x: rec.x, y: rec.y, png: await ProjectStorage.blobToDataURL(rec.blob) };
         }
         L.cels = pics;
+      }
+      for (const A of meta.audio) {
+        const clip = audioClips.find((c) => c.id === A.id);
+        A.data = await ProjectStorage.blobToDataURL(clip.blob);
       }
       blob = new Blob([JSON.stringify(meta)], { type: 'application/json' });
     } catch (err) {
@@ -2844,6 +2955,9 @@
       await loadProject(meta, async (layerId, key, L) => {
         const rec = L.cels && L.cels[key];
         return rec ? decodeCel(rec) : null;
+      }, async (A) => {
+        if (typeof A.data !== 'string' || !/^data:(audio|video)\//.test(A.data)) return null;
+        return (await fetch(A.data)).blob();
       });
       if (!meta.name) project.name = file.name.replace(/\.(anim|json)$/i, '') || 'Untitled';
       updateTitle();
@@ -2878,6 +2992,221 @@
     updateTitle();
     scheduleAutosave();
   });
+
+  // ---------------------------------------------------------------------------
+  // Sound: music and voice clips that play with the animation
+  // ---------------------------------------------------------------------------
+  const MAX_CLIPS = 8;
+  const audioClips = [];
+  let clipIds = 0, voiceCount = 0;
+  const audioPanel = $('#panel-audio');
+  const audioInput = $('#a-file');
+
+  // clip = { id, name, blob (the file), buffer (decoded), peaks, offset, skip, volume, muted }
+  async function makeClip(blob, name, offset, id) {
+    const buffer = await SoundEngine.decode(blob);
+    return {
+      id: id || 'a' + (++clipIds), name, blob, buffer,
+      peaks: SoundEngine.peaks(buffer),
+      offset: Math.max(0, offset || 0), skip: 0, volume: 1, muted: false,
+    };
+  }
+  function audioChanged(rebuild) {
+    markAllThumbs();
+    scheduleAutosave();
+    $('#audio-label').textContent = audioClips.length ? `Sound (${audioClips.length})` : 'Sound';
+    if (rebuild !== false && !audioPanel.hidden) buildAudioList();
+  }
+  async function addClip(blob, name, offset, label) {
+    if (audioClips.length >= MAX_CLIPS) { toast(`You can have up to ${MAX_CLIPS} sounds.`); return null; }
+    let clip;
+    try {
+      clip = await makeClip(blob, name, offset);
+    } catch (err) {
+      console.warn(err);
+      toast('That sound couldn\'t be opened. Try an MP3, WAV or M4A file.');
+      return null;
+    }
+    audioClips.push(clip);
+    history.push({
+      label: label || 'Add sound',
+      undo() { audioClips.splice(audioClips.indexOf(clip), 1); },
+      redo() { audioClips.push(clip); },
+    });
+    audioChanged();
+    return clip;
+  }
+  function removeClip(clip) {
+    const i = audioClips.indexOf(clip);
+    if (i < 0) return;
+    stopPlay();
+    audioClips.splice(i, 1);
+    history.push({
+      label: 'Delete sound',
+      undo() { audioClips.splice(i, 0, clip); },
+      redo() { audioClips.splice(audioClips.indexOf(clip), 1); },
+    });
+    audioChanged();
+    toast(`Deleted "${clip.name}". Press Undo to bring it back.`);
+  }
+
+  $('#a-add').addEventListener('click', () => {
+    if (audioClips.length >= MAX_CLIPS) { toast(`You can have up to ${MAX_CLIPS} sounds.`); return; }
+    audioInput.value = '';
+    audioInput.click();
+  });
+  audioInput.addEventListener('change', async () => {
+    const file = audioInput.files && audioInput.files[0];
+    if (!file) return;
+    if (file.size > 100 * 1024 * 1024) { toast('That file is too big (over 100 MB). Try a shorter or compressed (MP3) version.'); return; }
+    toast('Adding sound…', 1500);
+    const clip = await addClip(file, file.name.replace(/\.[a-z0-9]+$/i, '').slice(0, 60) || 'Sound', 0);
+    if (clip) toast(`Added "${clip.name}". Press Play to hear it with your animation.`);
+  });
+
+  // Recording your voice: the animation plays from the current frame while you speak.
+  async function startRecording() {
+    if (recording || playing || busy()) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+      toast('This browser can\'t record sound here. Try Chrome or Edge, or add a sound file instead.');
+      return;
+    }
+    if (audioClips.length >= MAX_CLIPS) { toast(`You can have up to ${MAX_CLIPS} sounds.`); return; }
+    closePanels();
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (err) {
+      toast('The microphone couldn\'t be used. Check that the browser is allowed to use it.');
+      return;
+    }
+    const rec = new MediaRecorder(stream);
+    const chunks = [];
+    const startAt = timeOfFrame(doc.frame);
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      recording = null;
+      updatePlayButton();
+      const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+      if (blob.size < 500) { toast('Nothing was recorded.'); return; }
+      const clip = await addClip(blob, `Voice ${++voiceCount}`, startAt, 'Record voice');
+      if (clip) toast(`"${clip.name}" added. Press Play to hear it with your animation.`);
+    };
+    recording = { rec };
+    rec.start();
+    updatePlayButton();
+    toast('Recording… speak now. Press Stop when you\'re done.', 3000);
+    if (doc.frames.length >= 2) startPlay({ record: true });
+  }
+  function stopRecording() {
+    if (recording && recording.rec.state !== 'inactive') recording.rec.stop();
+  }
+  $('#a-rec').addEventListener('click', startRecording);
+
+  const fmtTime = (sec) => {
+    const m = Math.floor(sec / 60), s2 = sec - m * 60;
+    return `${m}:${s2 < 10 ? '0' : ''}${s2.toFixed(1)}`;
+  };
+  const SPEAKER = '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>';
+  const SPEAKER_OFF = '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6M21 9l-5 6"/></svg>';
+  const TRASH = '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>';
+
+  function drawClipWave(cv, clip) {
+    const w = cv.clientWidth || 280, h = cv.clientHeight || 36;
+    cv.width = Math.round(w * DPR);
+    cv.height = Math.round(h * DPR);
+    const g = cv.getContext('2d');
+    g.scale(DPR, DPR);
+    const n = clip.peaks.length, dur = clip.buffer.duration;
+    const skipX = (clip.skip / dur) * w;
+    for (let x = 0; x < w; x++) {
+      const a = Math.floor((x / w) * n), b = Math.max(a + 1, Math.floor(((x + 1) / w) * n));
+      let m = 0;
+      for (let i = a; i < b; i++) if (clip.peaks[i] > m) m = clip.peaks[i];
+      const bar = Math.max(1, m * (h - 4));
+      g.fillStyle = x < skipX ? 'rgba(120,120,120,0.45)' : '#4f6df5';
+      g.fillRect(x, (h - bar) / 2, 1, bar);
+    }
+  }
+
+  function buildAudioList() {
+    const list = $('#audio-list');
+    list.innerHTML = '';
+    if (!audioClips.length) {
+      list.innerHTML = '<p class="audio-empty">No sound yet. Add music or record your voice.</p>';
+      return;
+    }
+    for (const clip of audioClips) {
+      const box = document.createElement('div');
+      box.className = 'clip' + (clip.muted ? ' muted-clip' : '');
+      box.innerHTML = `
+        <div class="clip-head">
+          <span class="clip-name"></span>
+          <span class="clip-len">${fmtTime(clip.buffer.duration)}</span>
+          <button class="icon-toggle" data-act="mute" title="${clip.muted ? 'Unmute' : 'Mute'}">${clip.muted ? SPEAKER_OFF : SPEAKER}</button>
+          <button class="icon-toggle" data-act="delete" title="Delete this sound">${TRASH}</button>
+        </div>
+        <canvas class="clip-wave"></canvas>
+        <div class="clip-row"><span>Starts at</span>
+          <input type="number" data-k="offset" min="0" step="0.1" value="${clip.offset.toFixed(2)}"> s
+          <button class="mini" data-act="here" title="Start this sound on the frame you're on">This frame</button></div>
+        <div class="clip-row"><span>Skip first</span>
+          <input type="number" data-k="skip" min="0" step="0.1" value="${clip.skip.toFixed(2)}"> s</div>
+        <div class="clip-row"><span>Volume</span>
+          <input type="range" data-k="volume" min="0" max="150" value="${Math.round(clip.volume * 100)}">
+          <output>${Math.round(clip.volume * 100)}%</output></div>`;
+      box.querySelector('.clip-name').textContent = clip.name;
+      box.querySelector('.clip-name').title = clip.name;
+      list.appendChild(box);
+      drawClipWave(box.querySelector('.clip-wave'), clip);
+      box.querySelector('[data-act=mute]').addEventListener('click', () => { clip.muted = !clip.muted; audioChanged(); });
+      box.querySelector('[data-act=delete]').addEventListener('click', () => removeClip(clip));
+      box.querySelector('[data-act=here]').addEventListener('click', () => {
+        clip.offset = Math.round(timeOfFrame(doc.frame) * 100) / 100;
+        audioChanged();
+      });
+      box.querySelectorAll('input[type=number]').forEach((inp) => inp.addEventListener('change', () => {
+        const k = inp.dataset.k;
+        const max = k === 'skip' ? Math.max(0, clip.buffer.duration - 0.1) : 3600;
+        clip[k] = clamp(+inp.value || 0, 0, max);
+        inp.value = clip[k].toFixed(2);
+        drawClipWave(box.querySelector('.clip-wave'), clip);
+        audioChanged(false);
+      }));
+      const vol = box.querySelector('input[type=range]');
+      vol.addEventListener('input', () => {
+        clip.volume = +vol.value / 100;
+        box.querySelector('output').textContent = vol.value + '%';
+      });
+      vol.addEventListener('change', () => audioChanged(false));
+    }
+  }
+
+  // A tiny waveform along the bottom of a frame thumbnail, for lining up sound with pictures.
+  function drawThumbWave(g, frame, tl, W, H) {
+    const clips = audibleClips();
+    if (!clips.length) return;
+    const i = doc.frames.indexOf(frame);
+    const t0 = tl.starts[i], t1 = t0 + (frame.hold || 1) / doc.fps;
+    const band = Math.round(H * 0.26);
+    g.fillStyle = 'rgba(20,24,40,0.55)';
+    g.fillRect(0, H - band, W, band);
+    const bars = 14;
+    g.fillStyle = '#9fb2ff';
+    for (let b = 0; b < bars; b++) {
+      const ta = t0 + ((t1 - t0) * b) / bars, tb = t0 + ((t1 - t0) * (b + 1)) / bars;
+      let m = 0;
+      for (const c of clips) {
+        const a = Math.floor((ta - c.offset + c.skip) * 100), z = Math.ceil((tb - c.offset + c.skip) * 100);
+        for (let k = Math.max(a, Math.floor(c.skip * 100)); k < Math.min(z, c.peaks.length); k++) {
+          if (c.peaks[k] * c.volume > m) m = c.peaks[k] * c.volume;
+        }
+      }
+      const h = Math.max(1, Math.min(1, m * 1.3) * (band - 2));
+      g.fillRect((b * W) / bars + 0.5, H - band / 2 - h / 2, Math.max(1, W / bars - 1), h);
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Inserting pictures (PNG, JPG, ...)
@@ -3037,7 +3366,7 @@
       if (e.key.toLowerCase() === 's') saveToFile(); else openFile();
       return;
     }
-    if (e.target.matches && e.target.matches('input[type=text], select')) return; // typing in a box
+    if (e.target.matches && e.target.matches('input[type=text], input[type=number], select')) return; // typing in a box
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
     if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }

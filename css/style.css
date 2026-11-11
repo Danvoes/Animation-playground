@@ -477,3 +477,23 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
   background: rgba(79, 109, 245, .12); color: #fff; font-size: 18px; font-weight: 600;
   text-shadow: 0 1px 4px rgba(0, 0, 0, .6); pointer-events: none;
 }
+
+/* ============ Sound ============ */
+.clip { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
+.clip-head { display: flex; align-items: center; gap: 6px; }
+.clip-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clip-len { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.clip-wave { display: block; width: 100%; height: 36px; margin: 6px 0; border-radius: 6px; background: var(--accent-soft); }
+.clip.muted-clip .clip-wave { opacity: .4; }
+.clip-row { display: flex; align-items: center; gap: 8px; margin: 5px 0; font-size: 12px; }
+.clip-row > span:first-child { width: 64px; flex: none; }
+.clip-row input[type=number] {
+  width: 68px; height: 30px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; color: var(--text); font: inherit; font-size: 12px;
+  -webkit-user-select: text; user-select: text;
+}
+.clip-row input[type=range] { flex: 1; min-width: 0; }
+.clip-row output { width: 38px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+.clip-row .mini { height: 30px; font-size: 11px; padding: 0 8px; }
+.audio-empty { font-size: 13px; color: var(--muted); margin: 0 0 10px; }
+#btn-play.recording { color: #d23c3c; background: rgba(210, 60, 60, .12); }

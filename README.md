@@ -36,6 +36,20 @@ Open the menu and use **Insert image**:
 Big pictures are shrunk to fit the canvas. You can also **drag pictures onto the canvas**
 (several at once become frames) or **paste** one with Ctrl+V.
 
+## Adding sound
+
+Tap **Sound** in the timeline:
+
+- **+ Add sound file:** music or any sound (MP3, WAV, M4A, OGG). Up to 8 sounds.
+- **● Record voice:** records from your microphone while the animation plays from the current
+  frame, so you can speak in time with it. Press **Stop rec.** (or let the animation finish) to stop.
+- For each sound: **Starts at** (when it begins, in seconds from frame 1; **This frame** sets it
+  to the frame you're on), **Skip first** (cut a slow start), **Volume**, mute and delete.
+
+Sound plays with the animation in **Loop** and **Once** modes, perfectly in step (in Loop it starts
+again each time round). The frame thumbnails show a small waveform, so you can see where words or
+beats land. Sounds are saved with your project.
+
 ## The screen
 
 - **Top bar, right:** Brush, Blend, Eraser, Pick color, Select, Transform, Layers, Color.
@@ -129,8 +143,8 @@ Big pictures are shrunk to fit the canvas. You can also **drag pictures onto the
 | `js/color.js` | The color wheel |
 | `js/history.js` | Undo / redo |
 | `js/storage.js` | Saving in the browser, and project files |
+| `js/audio.js` | Sound: decoding, waveforms and in-sync playback |
 
 ## Coming next
 
-- **Stage 4:** audio
 - **Stage 6:** exporting video with audio

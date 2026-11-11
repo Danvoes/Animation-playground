@@ -108,6 +108,10 @@
         <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>
         <span>Options</span>
       </button>
+      <button class="btn" id="btn-audio" data-panel="panel-audio" title="Sound: add music or record your voice">
+        <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+        <span id="audio-label">Sound</span>
+      </button>
     </div>
 
     <div class="frame-strip" id="frame-strip"></div>
@@ -268,6 +272,20 @@
       resize or rotate it.</p>
   </div>
 
+  <!-- ===== Pop-out panel: sound ===== -->
+  <div class="panel panel-wide" id="panel-audio" hidden>
+    <h2>Sound</h2>
+    <div id="audio-list"></div>
+    <div class="mini-grid">
+      <button class="mini" id="a-add" title="Add music or another sound file">+ Add sound file</button>
+      <button class="mini" id="a-rec" title="Record with your microphone while the animation plays">● Record voice</button>
+    </div>
+    <p class="hint">MP3, WAV, M4A or OGG. Sound plays along when you press Play (in Loop and Once modes).
+      "Starts at" is when a sound begins, counted from frame 1. Recording plays your animation from the
+      current frame so you can speak in time with it.</p>
+    <input type="file" id="a-file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.aac,.flac" hidden>
+  </div>
+
   <!-- ===== Pop-out panel: menu ===== -->
   <div class="panel" id="panel-menu" hidden>
     <h2>Project</h2>
@@ -387,6 +405,7 @@
   <script src="js/blendtool.js"></script>
   <script src="js/quickshape.js"></script>
   <script src="js/storage.js"></script>
+  <script src="js/audio.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
