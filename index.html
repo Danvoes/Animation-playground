@@ -13,6 +13,10 @@
       <button class="tb" id="btn-menu" data-panel="panel-menu" title="Menu: view, touch settings, gestures, clear layer">
         <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
+      <button class="project-title" id="project-title" data-panel="panel-menu" title="Project name and save status">
+        <span id="title-name">Untitled</span>
+        <span class="save-status" id="save-status"></span>
+      </button>
       <button class="zoom-readout" id="zoom-readout" title="Fit the canvas to the screen (0)">100%</button>
     </div>
 
@@ -266,7 +270,16 @@
 
   <!-- ===== Pop-out panel: menu ===== -->
   <div class="panel" id="panel-menu" hidden>
-    <h2>View</h2>
+    <h2>Project</h2>
+    <input type="text" class="text-input" id="p-name" maxlength="60" placeholder="Untitled" aria-label="Project name">
+    <div class="mini-grid three">
+      <button class="mini" id="p-save" title="Save the whole project as a file (Ctrl+S)">Save to file</button>
+      <button class="mini" id="p-open" title="Open a project file (Ctrl+O)">Open file</button>
+      <button class="mini" id="p-new" title="Start a new, empty project">New</button>
+    </div>
+    <p class="hint" id="p-status">Your work is saved in this browser automatically.</p>
+    <input type="file" id="p-file" hidden>
+    <h2 class="gap">View</h2>
     <div class="mini-grid three">
       <button class="mini" id="m-fit" title="Shortcut: 0">Fit to screen</button>
       <button class="mini" id="m-actual" title="Show the drawing at its real pixel size">Actual size</button>
@@ -364,6 +377,7 @@
   <script src="js/brushes.js"></script>
   <script src="js/blendtool.js"></script>
   <script src="js/quickshape.js"></script>
+  <script src="js/storage.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

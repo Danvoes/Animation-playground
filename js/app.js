@@ -210,6 +210,7 @@
   history.onChange = () => {
     $('#btn-undo').disabled = !history.canUndo;
     $('#btn-redo').disabled = !history.canRedo;
+    scheduleAutosave();
   };
 
   const busy = () => !!(stroke || blendStroke);
@@ -247,12 +248,13 @@
   // extra (optional): { undo(), redo() } for anything else that changes with the pixels.
   function pushPixelStep(label, layer, cel, rect, before, after, extra) {
     const ctx = cel.getContext('2d');
+    markCelDirty(cel);
     history.push({
       label,
       frame: doc.frame,
       allFrames: layer.static,
-      undo() { ctx.putImageData(before, rect.x, rect.y); if (extra) extra.undo(); },
-      redo() { ctx.putImageData(after, rect.x, rect.y); if (extra) extra.redo(); },
+      undo() { ctx.putImageData(before, rect.x, rect.y); markCelDirty(cel); if (extra) extra.undo(); },
+      redo() { ctx.putImageData(after, rect.x, rect.y); markCelDirty(cel); if (extra) extra.redo(); },
     });
     if (layer.static) markAllThumbs(); else markThumb(doc.frame);
     refreshLayersPanel();
@@ -1881,6 +1883,7 @@
   }
   $('#btn-play').addEventListener('click', togglePlay);
 
+  $('#fps').addEventListener('change', () => scheduleAutosave());
   $('#fps').addEventListener('input', (e) => {
     doc.fps = +e.target.value;
     $('#fps-out').textContent = doc.fps + ' fps';
@@ -1908,6 +1911,7 @@
   onionInput('o-opacity', 'opacity');
   $$('#play-modes button').forEach((b) => b.addEventListener('click', () => {
     state.playMode = b.dataset.mode;
+    scheduleAutosave();
     saveSettings();
     syncUI();
   }));
@@ -1941,6 +1945,7 @@
 
   // Called whenever layers change: redraw the canvas, thumbnails and panel.
   function layersChanged() {
+    scheduleAutosave();
     markAllThumbs();
     refreshOnion();
     refreshLayersPanel();
@@ -2331,6 +2336,7 @@
     if (panel.id === 'panel-brush') drawBrushPreviews();
     if (panel.id === 'panel-color') picker.markPrevious();
     if (panel.id === 'panel-frame') refreshFramePanel();
+    if (panel.id === 'panel-menu') $('#p-name').value = project.name === 'Untitled' ? '' : project.name;
     const r = anchor.getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
     panel.style.left = left + 'px';
@@ -2513,9 +2519,375 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Saving and opening projects
+  // ---------------------------------------------------------------------------
+  const project = { name: 'Untitled', fileHandle: null };
+  let storageOK = false;    // can we save in this browser?
+  let restoring = true;     // don't save until the last project has been loaded
+  let saveTimer = null, saving = false, saveAgain = false, unsaved = false;
+  const dirtyCels = new Set(); // drawings changed since they were last saved
+  const lastSaved = new Map(); // "layerId|key" -> the drawing saved under it
+
+  function markCelDirty(cel) { dirtyCels.add(cel); }
+
+  // Turn a drawing into a small PNG of just the part that has something on it
+  // (much faster and smaller than the whole canvas).
+  // Returns { x, y, w, h, blob }, or { empty: true } for a blank drawing.
+  const cropCanvas = makeCanvas(1, 1);
+  async function encodeCel(cel) {
+    const b = alphaBounds(cel.getContext('2d').getImageData(0, 0, DOC_W, DOC_H).data);
+    if (!b) return { empty: true };
+    if (window.OffscreenCanvas) {
+      // Faster: encodes right away instead of waiting for the browser to be idle.
+      try {
+        const oc = new OffscreenCanvas(b.w, b.h);
+        oc.getContext('2d').drawImage(cel, -b.x, -b.y);
+        return { x: b.x, y: b.y, w: b.w, h: b.h, blob: await oc.convertToBlob({ type: 'image/png' }) };
+      } catch (_) { /* fall back to the normal way below */ }
+    }
+    cropCanvas.width = b.w;
+    cropCanvas.height = b.h;
+    const c = cropCanvas.getContext('2d');
+    c.clearRect(0, 0, b.w, b.h);
+    c.drawImage(cel, -b.x, -b.y);
+    return { x: b.x, y: b.y, w: b.w, h: b.h, blob: await ProjectStorage.canvasToBlob(cropCanvas) };
+  }
+  // The reverse: rebuild a full-size drawing from a saved record.
+  // rec is { x, y, blob } (browser storage) or { x, y, png: dataURL } (files);
+  // a plain Blob or data URL (a whole-canvas picture) also works.
+  async function decodeCel(rec) {
+    const c = makeCanvas(DOC_W, DOC_H);
+    if (!rec || rec.empty) return c;
+    let src = rec, x = 0, y = 0, whole = true;
+    if (!(rec instanceof Blob) && typeof rec === 'object') {
+      src = rec.blob || rec.png;
+      x = +rec.x || 0;
+      y = +rec.y || 0;
+      whole = false;
+    }
+    if (typeof src === 'string' && !/^data:image\/(png|jpeg|webp);base64,/.test(src)) return null;
+    if (!(src instanceof Blob) && typeof src !== 'string') return null;
+    const img = await ProjectStorage.toImage(src);
+    const ctx = c.getContext('2d');
+    if (whole) ctx.drawImage(img, 0, 0, DOC_W, DOC_H);
+    else ctx.drawImage(img, x, y);
+    if (img.close) img.close();
+    return c;
+  }
+
+  function updateTitle() {
+    $('#title-name').textContent = project.name;
+    document.title = `${project.name} – Animation Playground`;
+  }
+  function setSaveStatus(kind) {
+    const el = $('#save-status');
+    const text = {
+      saved: 'Saved',
+      saving: 'Saving…',
+      off: 'Not saved',
+      error: 'Couldn\'t save',
+    }[kind];
+    el.textContent = text;
+    el.classList.toggle('warn', kind === 'off' || kind === 'error');
+    $('#p-status').textContent = {
+      saved: 'Your work is saved in this browser automatically.',
+      saving: 'Saving in this browser…',
+      off: 'This browser won\'t let the app save automatically here (for example in a private window). Use "Save to file" to keep your work.',
+      error: 'Saving in this browser failed (it may be full). Use "Save to file" to keep your work.',
+    }[kind];
+  }
+
+  // Everything about the project except the pictures themselves.
+  function snapshotMeta() {
+    const frameIds = new Set(doc.frames.map((f) => f.id));
+    return {
+      app: 'animation-playground',
+      version: 1,
+      name: project.name,
+      width: DOC_W,
+      height: DOC_H,
+      fps: doc.fps,
+      playMode: state.playMode,
+      frames: doc.frames.map((f) => ({ id: f.id, hold: f.hold || 1 })),
+      layers: doc.layers.map((l) => ({
+        id: l.id, name: l.name, static: l.static, visible: l.visible, locked: l.locked,
+        opacity: l.opacity, blend: l.blend,
+        cels: [...l.cels.keys()].filter((k) => k === 'static' || frameIds.has(k)),
+      })),
+      activeLayer: doc.active.id,
+      currentFrame: doc.frame.id,
+      layerCounter,
+      savedAt: new Date().toISOString(),
+    };
+  }
+
+  function scheduleAutosave() {
+    if (restoring) return;
+    unsaved = true;
+    if (!storageOK) return;
+    setSaveStatus('saving');
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(autosave, 600);
+  }
+
+  // Save the project in this browser. Only drawings that changed are re-saved.
+  async function autosave() {
+    saveTimer = null;
+    if (!storageOK || restoring) return;
+    if (saving) { saveAgain = true; return; }
+    if (busy() || transform) { scheduleAutosave(); return; } // wait until you finish
+    saving = true;
+    try {
+      const meta = snapshotMeta();
+      const keep = new Set();
+      const puts = [];
+      for (const L of meta.layers) {
+        const layer = doc.layers.find((x) => x.id === L.id);
+        for (const key of L.cels) {
+          const rk = `${L.id}|${key}`;
+          const cel = layer.cels.get(key);
+          keep.add(rk);
+          if (lastSaved.get(rk) !== cel || dirtyCels.has(cel)) {
+            dirtyCels.delete(cel); // if it changes again while saving, it'll be marked again
+            puts.push([rk, cel, await encodeCel(cel)]);
+          }
+        }
+      }
+      await ProjectStorage.saveProject(meta, puts.map(([rk, , blob]) => [rk, blob]), keep);
+      for (const [rk, cel] of puts) lastSaved.set(rk, cel);
+      for (const rk of [...lastSaved.keys()]) if (!keep.has(rk)) lastSaved.delete(rk);
+      if (!saveTimer && !saveAgain) { unsaved = false; setSaveStatus('saved'); }
+    } catch (err) {
+      console.warn('Autosave failed', err);
+      setSaveStatus('error');
+    } finally {
+      saving = false;
+      if (saveAgain) { saveAgain = false; autosave(); }
+    }
+  }
+
+  // Save right away when you switch away from the app (so nothing is lost).
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && saveTimer) { clearTimeout(saveTimer); autosave(); }
+  });
+  window.addEventListener('beforeunload', (e) => {
+    if (unsaved && storageOK) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  /**
+   * Replace the current project with a saved one.
+   * meta: the project description; fetchCel(layerId, key) -> picture (or null).
+   */
+  async function loadProject(meta, fetchCel) {
+    if (!meta || !Array.isArray(meta.frames) || !Array.isArray(meta.layers) ||
+        !meta.frames.length || !meta.layers.length) {
+      throw new Error('This file doesn\'t look like an Animation Playground project.');
+    }
+    // Build everything first, so a broken file can't leave a half-loaded project.
+    const usedF = new Set(), usedL = new Set();
+    const num = (id) => parseInt(String(id).replace(/\D/g, ''), 10) || 0;
+    let maxF = 0, maxL = 0;
+    const frames = meta.frames.slice(0, MAX_FRAMES).map((f) => {
+      let id = String(f.id || '');
+      if (!/^f\d+$/.test(id) || usedF.has(id)) id = 'f' + (100000 + usedF.size);
+      usedF.add(id);
+      maxF = Math.max(maxF, num(id));
+      return { id, hold: clamp(Math.round(+f.hold) || 1, 1, 24), oldId: String(f.id) };
+    });
+    const idMap = new Map(frames.map((f) => [f.oldId, f.id]));
+    const blends = BLEND_MODES.map((m) => m[0]);
+    const layers = [];
+    for (const L of meta.layers.slice(0, MAX_LAYERS)) {
+      let id = String(L.id || '');
+      if (!/^l\d+$/.test(id) || usedL.has(id)) id = 'l' + (100000 + usedL.size);
+      usedL.add(id);
+      maxL = Math.max(maxL, num(id));
+      const layer = {
+        id,
+        name: String(L.name || 'Layer').slice(0, 40),
+        cels: new Map(),
+        static: !!L.static,
+        visible: L.visible !== false,
+        locked: !!L.locked,
+        opacity: Number.isFinite(+L.opacity) ? clamp(+L.opacity, 0, 1) : 1,
+        blend: blends.includes(L.blend) ? L.blend : 'source-over',
+      };
+      const keys = Array.isArray(L.cels) ? L.cels : Object.keys(L.cels || {});
+      for (const key of keys) {
+        const newKey = key === 'static' ? 'static' : idMap.get(String(key));
+        if (!newKey) continue;
+        const c = await fetchCel(String(L.id), String(key), L);
+        if (c) layer.cels.set(newKey, c);
+      }
+      layers.push(layer);
+    }
+    frames.forEach((f) => { delete f.oldId; });
+
+    // Swap it in.
+    if (transform) cancelTransform();
+    setSelection(null);
+    stopPlay();
+    closePanels();
+    doc.layers = layers;
+    doc.frames = frames;
+    doc.active = layers.find((l) => l.id === String(meta.activeLayer)) || layers[layers.length - 1];
+    doc.frame = frames.find((f) => f.id === idMap.get(String(meta.currentFrame))) || frames[0];
+    doc.fps = clamp(Math.round(+meta.fps) || 12, 1, 30);
+    if (['loop', 'pingpong', 'once'].includes(meta.playMode)) state.playMode = meta.playMode;
+    layerIds = maxL;
+    frameIds = maxF;
+    layerCounter = Math.max(+meta.layerCounter || 0, layers.length);
+    project.name = String(meta.name || 'Untitled').slice(0, 60) || 'Untitled';
+    project.fileHandle = null;
+    history.undoStack.length = 0;
+    history.redoStack.length = 0;
+    dirtyCels.clear();
+    lastSaved.clear();
+    updateTitle();
+    buildStrip();
+    goFrame(doc.frame);
+    layersChanged();
+    history.onChange();
+    syncUI();
+    fitView();
+  }
+
+  // On start: bring back the project from last time.
+  async function restoreProject() {
+    try {
+      await ProjectStorage.openDB();
+      storageOK = true;
+    } catch (err) {
+      restoring = false;
+      setSaveStatus('off');
+      return;
+    }
+    try {
+      const meta = await ProjectStorage.get('meta', 'current');
+      if (meta && meta.layers) {
+        await loadProject(meta, async (layerId, key) => {
+          const rec = await ProjectStorage.get('cels', `${layerId}|${key}`);
+          return rec ? decodeCel(rec) : null;
+        });
+        // What's on screen now matches what's saved.
+        for (const layer of doc.layers) layer.cels.forEach((cel, key) => lastSaved.set(`${layer.id}|${key}`, cel));
+        toast('Welcome back! Your last project is open.', 2200);
+      }
+    } catch (err) {
+      console.warn('Restore failed', err);
+      toast('Your last project couldn\'t be opened. Starting fresh.');
+    }
+    restoring = false;
+    unsaved = false;
+    setSaveStatus('saved');
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  }
+
+  const safeFileName = (name) => (name.replace(/[\\/:*?"<>|]+/g, '').trim() || 'Untitled');
+
+  // Save the whole project as one .anim file.
+  async function saveToFile() {
+    if (busy()) return;
+    if (transform) applyTransform();
+    closePanels();
+    stopPlay();
+    toast('Preparing your file…', 1500);
+    let blob;
+    try {
+      const meta = snapshotMeta();
+      for (const L of meta.layers) {
+        const layer = doc.layers.find((x) => x.id === L.id);
+        const pics = {};
+        for (const key of L.cels) {
+          const rec = await encodeCel(layer.cels.get(key));
+          if (rec.empty) continue; // nothing drawn there
+          pics[key] = { x: rec.x, y: rec.y, png: await ProjectStorage.blobToDataURL(rec.blob) };
+        }
+        L.cels = pics;
+      }
+      blob = new Blob([JSON.stringify(meta)], { type: 'application/json' });
+    } catch (err) {
+      console.warn(err);
+      toast('Sorry, the file couldn\'t be prepared.');
+      return;
+    }
+    const fileName = safeFileName(project.name) + '.anim';
+    try {
+      project.fileHandle = await ProjectStorage.writeFile(blob, fileName, project.fileHandle);
+      toast(project.fileHandle ? `Saved to "${project.fileHandle.name}".` : `Saved "${fileName}" to your Downloads folder.`);
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // you cancelled
+      // The "Save as" window didn't work: use a normal download instead.
+      project.fileHandle = null;
+      ProjectStorage.download(blob, fileName);
+      toast(`Saved "${fileName}" to your Downloads folder.`);
+    }
+  }
+
+  // Open a .anim file.
+  const fileInput = $('#p-file');
+  function openFile() {
+    if (busy()) return;
+    const ok = confirm('Open a project file?\n\nIt will replace the project on screen. To keep this one, press Cancel and use "Save to file" first.');
+    if (!ok) return;
+    closePanels();
+    fileInput.value = '';
+    fileInput.click();
+  }
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    toast('Opening…', 1500);
+    try {
+      const meta = JSON.parse(await file.text());
+      if (!meta || meta.app !== 'animation-playground') throw new Error('not ours');
+      await loadProject(meta, async (layerId, key, L) => {
+        const rec = L.cels && L.cels[key];
+        return rec ? decodeCel(rec) : null;
+      });
+      if (!meta.name) project.name = file.name.replace(/\.(anim|json)$/i, '') || 'Untitled';
+      updateTitle();
+      autosaveNow();
+      toast(`Opened "${project.name}".`);
+    } catch (err) {
+      console.warn(err);
+      toast('That file couldn\'t be opened. Is it an Animation Playground project (.anim)?');
+    }
+  });
+  function autosaveNow() {
+    scheduleAutosave();
+    clearTimeout(saveTimer);
+    autosave();
+  }
+
+  function newProject() {
+    if (busy()) return;
+    const ok = confirm('Start a new, empty project?\n\nThe project on screen will be replaced. To keep it, press Cancel and use "Save to file" first.');
+    if (!ok) return;
+    loadProject({
+      name: 'Untitled', fps: doc.fps, playMode: state.playMode, layerCounter: 1,
+      frames: [{ id: 'f1', hold: 1 }], layers: [{ id: 'l1', name: 'Layer 1', cels: [] }],
+    }, async () => null).then(() => { autosaveNow(); toast('New project started.'); });
+  }
+
+  $('#p-save').addEventListener('click', saveToFile);
+  $('#p-open').addEventListener('click', openFile);
+  $('#p-new').addEventListener('click', newProject);
+  $('#p-name').addEventListener('input', (e) => {
+    project.name = e.target.value.trim() || 'Untitled';
+    updateTitle();
+    scheduleAutosave();
+  });
+
+  // ---------------------------------------------------------------------------
   // Keyboard shortcuts
   // ---------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key.toLowerCase() === 's' || e.key.toLowerCase() === 'o')) {
+      e.preventDefault();
+      if (e.key.toLowerCase() === 's') saveToFile(); else openFile();
+      return;
+    }
     if (e.target.matches && e.target.matches('input[type=text], select')) return; // typing in a box
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
@@ -2566,5 +2938,8 @@
   buildStrip();
   history.onChange();
   refreshLayersPanel();
+  updateTitle();
+  setSaveStatus('saving');
   requestRender();
+  restoreProject();
 })();

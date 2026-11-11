@@ -10,12 +10,25 @@ It runs entirely in your web browser. There is nothing to install.
 
 Use an up-to-date Chrome, Edge, Firefox or Safari.
 
+## Saving your work
+
+- **Automatic:** your project is saved in this browser a moment after every change
+  ("Saved" appears next to the project name). Close the page and open it again later:
+  your project comes back exactly as you left it.
+- **Save to file** (menu, or Ctrl+S): saves the whole project as one `.anim` file, for
+  backups or moving it to another computer or tablet. Keep copies of important work this way,
+  because clearing your browser's data also clears what it saved automatically.
+- **Open file** (menu, or Ctrl+O): opens a `.anim` file.
+- **New:** starts an empty project. Give your project a name in the menu.
+
+Undo history isn't kept when you close the page.
+
 ## The screen
 
 - **Top bar, right:** Brush, Blend, Eraser, Pick color, Select, Transform, Layers, Color.
   Tap a tool to choose it; **tap it again** to open its settings.
-- **Top bar, left:** the menu (view, touch settings, gestures, clear layer) and the zoom level
-  (tap it to fit the canvas to the screen).
+- **Top bar, left:** the menu (project, view, touch settings, gestures, clear layer), the project
+  name with its save status, and the zoom level (tap it to fit the canvas to the screen).
 - **Side bar (left):** drag the top slider for **size** and the bottom slider for **opacity**
   (strength for the Blend tool), plus **Undo** and **Redo**.
 - **Timeline (bottom):** play/stop, speed, onion skin, and the frames.
@@ -77,6 +90,7 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 | Alt + click (Option + click on Mac) | Pick a color |
 | 0 | Fit canvas to screen |
 | + / − | Zoom in / out |
+| Ctrl+S / Ctrl+O | Save to file / Open file |
 | Ctrl+Z (Cmd+Z on Mac) | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | B / E / S / I | Brush / Eraser / Blend / Pick color |
@@ -101,10 +115,10 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 | `js/quickshape.js` | QuickShape (turns rough shapes into clean ones) |
 | `js/color.js` | The color wheel |
 | `js/history.js` | Undo / redo |
+| `js/storage.js` | Saving in the browser, and project files |
 
 ## Coming next
 
 - **Stage 3:** importing images
 - **Stage 4:** audio
-- **Stage 5:** saving and reopening projects
 - **Stage 6:** exporting video with audio
