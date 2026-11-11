@@ -68,6 +68,44 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Questions: Playground's own small dialog for "Name this…" and "Delete…?".
+  // ask({ title, message, input, ok, danger }) resolves to the typed text (or null
+  // if cancelled) when `input` is given, otherwise to true/false.
+  // ---------------------------------------------------------------------------
+  const askEl = $('#ask');
+  let askDone = null;
+  const askOpen = () => !askEl.hidden;
+  function ask(o) {
+    if (askDone) askDone(false);
+    const hasInput = o.input != null;
+    $('#ask-title').textContent = o.title;
+    $('#ask-msg').textContent = o.message || '';
+    $('#ask-msg').hidden = !o.message;
+    const inp = $('#ask-input');
+    inp.hidden = !hasInput;
+    inp.value = hasInput ? String(o.input) : '';
+    const okBtn = $('#ask-ok');
+    okBtn.textContent = o.ok || 'OK';
+    okBtn.classList.toggle('danger-fill', !!o.danger);
+    askEl.hidden = false;
+    setTimeout(() => { if (hasInput) { inp.focus(); inp.select(); } else okBtn.focus(); }, 0);
+    return new Promise((resolve) => {
+      askDone = (accepted) => {
+        askDone = null;
+        askEl.hidden = true;
+        resolve(hasInput ? (accepted ? inp.value : null) : !!accepted);
+      };
+    });
+  }
+  $('#ask-form').addEventListener('submit', (e) => { e.preventDefault(); if (askDone) askDone(true); });
+  $('#ask-cancel').addEventListener('click', () => { if (askDone) askDone(false); });
+  askEl.addEventListener('pointerdown', (e) => { if (e.target === askEl && askDone) askDone(false); });
+  askEl.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape' && askDone) { e.preventDefault(); askDone(false); }
+  });
+
+  // ---------------------------------------------------------------------------
   // The project ("document")
   // ---------------------------------------------------------------------------
   const doc = { layers: [], frames: [], active: null, frame: null, fps: 12, parts: new Map(), palettes: [] };
@@ -2050,10 +2088,13 @@
     updateFrameUI();
   });
   // Tap the time to jump to a moment in the animation.
-  $('#frame-counter').addEventListener('click', () => {
+  $('#frame-counter').addEventListener('click', async () => {
     stopPlay();
     const tl = buildTimeline();
-    const answer = prompt(`Go to which time? (in seconds, from 0 to ${tl.total.toFixed(2)})`, (tl.starts[frameIndex()] || 0).toFixed(2));
+    const answer = await ask({
+      title: 'Go to a time', message: `Type a time in seconds, from 0 to ${tl.total.toFixed(2)}.`,
+      input: (tl.starts[frameIndex()] || 0).toFixed(2), ok: 'Go',
+    });
     if (answer == null) return;
     const t = parseFloat(String(answer).replace(',', '.'));
     if (!Number.isFinite(t)) { toast('Please type a number of seconds, like 1.5'); return; }
@@ -3242,7 +3283,7 @@
         tools.appendChild(b);
       };
       tool('Rename', 'Rename this project', async () => {
-        const n = prompt('Rename this project:', pj.name || 'Untitled');
+        const n = await ask({ title: 'Rename this project', input: pj.name || 'Untitled', ok: 'Rename' });
         if (n === null || !n.trim()) return;
         const nm = n.trim().slice(0, 60);
         if (current) { project.name = nm; updateTitle(); autosaveNow(); await flushSave(); }
@@ -3256,7 +3297,11 @@
         buildGallery();
       });
       tool('Delete', 'Delete this project', async () => {
-        if (!confirm(`Delete "${pj.name || 'Untitled'}"?\n\nThis can't be undone. (Tip: use "Save to file" first if you might want it back.)`)) return;
+        if (!(await ask({
+          title: `Delete "${pj.name || 'Untitled'}"?`,
+          message: 'This can\'t be undone. Tip: use "Save to file" first if you might want it back.',
+          ok: 'Delete', danger: true,
+        }))) return;
         if (current) { clearTimeout(saveTimer); saveTimer = null; unsaved = false; project.id = null; }
         await ProjectStorage.deleteProject(pj.id);
         if (current) {
@@ -3335,9 +3380,13 @@
 
   // Open a .anim file. It becomes a new project in the gallery (nothing is replaced).
   const fileInput = $('#p-file');
-  function openFile() {
+  async function openFile() {
     if (busy()) return;
-    if (!storageOK && !confirm('Open a project file?\n\nIt will replace the project on screen. To keep this one, press Cancel and use "Save to file" first.')) return;
+    if (!storageOK && !(await ask({
+      title: 'Open a project file?',
+      message: 'It will replace the project on screen. To keep this one, cancel and use "Save to file" first.',
+      ok: 'Choose a file',
+    }))) return;
     closePanels();
     fileInput.value = '';
     fileInput.click();
@@ -3387,7 +3436,11 @@
 
   async function newProject() {
     if (busy()) return;
-    if (!storageOK && !confirm('Start a new, empty project?\n\nThis browser can\'t keep several projects, so the one on screen will be replaced. To keep it, press Cancel and use "Save to file" first.')) return;
+    if (!storageOK && !(await ask({
+      title: 'Start a new, empty project?',
+      message: 'This browser can\'t keep several projects, so the one on screen will be replaced. To keep it, cancel and use "Save to file" first.',
+      ok: 'Start new',
+    }))) return;
     closePanels();
     await flushSave();
     await startBlankProject();
@@ -4191,12 +4244,12 @@
           if (editing) paletteEditing.delete(pal.id); else paletteEditing.add(pal.id);
           buildPalettes();
         }, editing ? 'on' : ''),
-        mk('✎', 'Rename', () => {
-          const n = prompt('Rename this palette:', pal.name);
+        mk('✎', 'Rename', async () => {
+          const n = await ask({ title: 'Rename this palette', input: pal.name, ok: 'Rename' });
           if (n !== null && n.trim()) { pal.name = n.trim().slice(0, 40); palettesChanged(); }
         }),
-        mk('×', 'Delete this palette', () => {
-          if (!confirm(`Delete the palette "${pal.name}"?`)) return;
+        mk('×', 'Delete this palette', async () => {
+          if (!(await ask({ title: `Delete the palette "${pal.name}"?`, ok: 'Delete', danger: true }))) return;
           doc.palettes.splice(doc.palettes.indexOf(pal), 1);
           paletteEditing.delete(pal.id);
           palettesChanged();
@@ -4231,8 +4284,8 @@
     }
   }
 
-  $('#pal-new').addEventListener('click', () => {
-    const name = prompt('Name your new palette:', `Palette ${paletteIds + 1}`);
+  $('#pal-new').addEventListener('click', async () => {
+    const name = await ask({ title: 'Name your new palette', input: `Palette ${paletteIds + 1}`, ok: 'Create' });
     if (name === null) return;
     const pal = newPalette(name.trim().slice(0, 40) || `Palette ${paletteIds + 1}`, [state.color]);
     if (pal) toast('New palette started with your current color. Pick more colors and tap + to add them.');
@@ -4763,7 +4816,7 @@
   }));
 
   // ---- Making parts ----
-  function makePart() {
+  async function makePart() {
     if (busy() || partEdit) return;
     if (transform) applyTransform();
     stopPlay();
@@ -4783,8 +4836,10 @@
     }
     const bb = alphaBounds(lc.getImageData(0, 0, DOC_W, DOC_H).data);
     if (!bb) { toast(selection ? 'There\'s nothing drawn inside the selection on this layer.' : 'This layer is empty here.'); return; }
-    const name = prompt('Name this part (for example "Head" or "Left arm"):', `Part ${partIds + 1}`);
-    if (name === null) return;
+    const name = await ask({
+      title: 'Name this part', message: 'For example "Head" or "Left arm".', input: `Part ${partIds + 1}`, ok: 'Make part',
+    });
+    if (name === null || busy() || partEdit) return;
     const canvas = makeCanvas(bb.w, bb.h);
     canvas.getContext('2d').drawImage(lifted, -bb.x, -bb.y);
     const part = { id: 'p' + (++partIds), name: name.trim().slice(0, 40) || `Part ${partIds}`, canvas };
@@ -4870,17 +4925,19 @@
     toast(`Added "${part.name}" in the middle. Under "Set up joints", drag it into place and attach it.`, 4000);
   }
 
-  function renamePart(part) {
-    const name = prompt('Rename this part:', part.name);
+  async function renamePart(part) {
+    const name = await ask({ title: 'Rename this part', input: part.name, ok: 'Rename' });
     if (name === null || !name.trim()) return;
     part.name = name.trim().slice(0, 40);
     buildPartsGrid();
     refreshRigBar();
     scheduleAutosave();
   }
-  function deletePart(part) {
+  async function deletePart(part) {
     const users = doc.layers.filter((l) => l.rig && l.rig.nodes.some((n) => n.partId === part.id));
-    if (users.length && !confirm(`Delete "${part.name}"? It will also be taken off the puppet.`)) return;
+    if (users.length && !(await ask({
+      title: `Delete "${part.name}"?`, message: 'It will also be taken off the puppet.', ok: 'Delete', danger: true,
+    }))) return;
     const saved = users.map((l) => [l, clone(l.rig.nodes)]);
     const apply = () => {
       doc.parts.delete(part.id);
@@ -5049,6 +5106,11 @@
   // Keyboard shortcuts
   // ---------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
+    if (askOpen()) {
+      // Only the question box listens; Escape cancels it wherever the focus is.
+      if (e.key === 'Escape' && askDone) { e.preventDefault(); askDone(false); }
+      return;
+    }
     if (exporting) {
       e.preventDefault();
       if (e.key === 'Escape') cancelExport();

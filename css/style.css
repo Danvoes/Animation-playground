@@ -11,8 +11,9 @@
   --stage: #2b2d31;
   --shadow: 0 10px 30px rgba(0, 0, 0, .18);
 }
+/* Dark mode follows the device, unless a light or dark theme was chosen explicitly. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1d1f23;
     --panel: #2a2d33;
     --panel-glass: rgba(42, 45, 51, .88);
@@ -23,7 +24,21 @@
     --accent-soft: #333b5c;
     --stage: #141518;
     --shadow: 0 10px 30px rgba(0, 0, 0, .55);
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #1d1f23;
+  --panel: #2a2d33;
+  --panel-glass: rgba(42, 45, 51, .88);
+  --text: #e8eaed;
+  --muted: #9aa0a6;
+  --border: #3d4148;
+  --accent: #8096ff;
+  --accent-soft: #333b5c;
+  --stage: #141518;
+  --shadow: 0 10px 30px rgba(0, 0, 0, .55);
+  color-scheme: dark;
 }
 
 /* ============ Page ============ */
@@ -665,3 +680,22 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
   .gallery-box { border-radius: 0; }
   .gallery-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
 }
+
+/* ============ Question box ============ */
+#ask {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(10, 12, 18, .45);
+}
+#ask[hidden] { display: none; }
+.ask-box {
+  width: 360px; max-width: 100%; padding: 18px; border-radius: 14px;
+  background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.ask-box h2 { margin: 0; font-size: 16px; text-wrap: balance; }
+.ask-box .hint { margin: 0; }
+.ask-box .text-input { margin: 0; }
+.ask-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.ask-buttons .mini { height: 36px; min-width: 90px; }
+.mini.danger-fill { background: #d23c3c; border-color: #d23c3c; color: #fff; }
+.mini:focus-visible, .tb:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

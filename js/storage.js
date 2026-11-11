@@ -254,11 +254,25 @@
       await w.close();
       return handle;
     }
-    download(blob, suggestedName);
+    await download(blob, suggestedName);
     return null;
   }
-  // A plain download (goes to the Downloads folder).
-  function download(blob, name) {
+  // A plain download (goes to the Downloads folder). When Playground runs as a
+  // hosted claude.ai page, downloads go through that page's own "save file" prompt.
+  let hostSaver;
+  async function hostDownloads() {
+    if (hostSaver === undefined) {
+      hostSaver = null;
+      try { if (window.claude && window.claude.use) hostSaver = await window.claude.use('downloads'); } catch (_) { hostSaver = null; }
+    }
+    return hostSaver;
+  }
+  async function download(blob, name) {
+    const host = await hostDownloads();
+    if (host) {
+      try { await host.save({ filename: name, data: blob }); } catch (err) { if (err && err.code !== 'declined') console.warn('Save failed', err); }
+      return;
+    }
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
