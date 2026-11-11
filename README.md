@@ -10,6 +10,14 @@ It runs entirely in your web browser. There is nothing to install.
 
 Use an up-to-date Chrome, Edge, Firefox or Safari.
 
+## Quick wheel
+
+**Touch and hold** the canvas with one finger (or **right-click**, or press **Q**) and a ring of
+8 shortcuts appears. Slide onto one and let go, or let go first and tap one (number keys 1–8 work
+too). Choose what's on it in **Menu → Customize quick wheel** (or **Edit wheel** on the wheel): any
+tool, any of the 33 brushes, undo/redo, play, new frame/layer, onion skin, panels and more. There you
+can also make touch-and-hold pick a color instead.
+
 ## Saving your work and your projects
 
 - **My projects (gallery):** tap the project name at the top (or **My projects** in the menu) to see
@@ -134,8 +142,12 @@ Firefox (plays in browsers, VLC and on YouTube).
 
 ## What it can do
 
-- **Brush** with 12 types: Pen, Ink, Pencil, Charcoal, Crayon, Marker, Soft brush,
-  Watercolor, Airbrush, Splatter, Calligraphy, Glow
+- **Brush** with 33 types in five groups:
+  - Inking: Pen, Ink, Brush pen, Technical pen, Calligraphy, Ribbon
+  - Sketching: Pencil, Graphite, Colored pencil, Charcoal, Crayon, Pastel
+  - Painting: Soft brush, Watercolor, Ink wash, Gouache, Oil paint, Dry brush, Marker, Highlighter, Felt tip
+  - Airbrush & texture: Airbrush, Spray paint, Splatter, Stipple, Hatching, Crosshatch, Smoke
+  - Effects: Glow, Neon, Rainbow, Stars, Fur
   - Size, opacity, smoothing (steadies shaky lines) and stylus pressure
   - Fine-tune each brush: **Taper** (thin ends), **Light touch** (size at light pressure),
     **Jitter** (rougher, hand-made line), and **Reset this brush**

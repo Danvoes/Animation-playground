@@ -339,6 +339,11 @@
     <button class="mini wide" id="ex-png" title="Save the frame you're on as a PNG picture">Save this frame as a picture (PNG)</button>
   </div>
 
+  <!-- The quick wheel (touch and hold the canvas) -->
+  <div id="wheel" hidden>
+    <div id="wheel-ring"></div>
+  </div>
+
   <!-- The project gallery -->
   <div id="gallery" hidden>
     <div class="gallery-box">
@@ -414,6 +419,20 @@
     </ol>
   </div>
 
+  <!-- ===== Pop-out panel: customize the quick wheel ===== -->
+  <div class="panel" id="panel-wheel" hidden>
+    <h2>Quick wheel</h2>
+    <p class="hint" style="margin-top:0">Touch and hold the canvas with one finger (or right-click, or press Q) to open it.
+      Slide onto a slot and let go, or tap one. Choose what's in each slot:</p>
+    <div id="wheel-slots"></div>
+    <h2 class="gap">Touch and hold opens</h2>
+    <div class="segmented two" id="hold-mode">
+      <button data-v="wheel">Quick wheel</button>
+      <button data-v="pick">Pick a color</button>
+    </div>
+    <button class="mini wide" id="wheel-reset">Reset to the standard wheel</button>
+  </div>
+
   <!-- ===== Pop-out panel: menu ===== -->
   <div class="panel" id="panel-menu" hidden>
     <div class="brand brand-menu" aria-hidden="true"><span>P</span><span>l</span><span>a</span><span>y</span><span>g</span><span>r</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
@@ -444,6 +463,7 @@
     </div>
     <h2 class="gap">Touch</h2>
     <label class="check"><input type="checkbox" id="m-finger"> Draw with finger</label>
+    <button class="mini wide" id="m-wheel" style="margin-top:10px" title="Choose what's on the quick wheel">Customize quick wheel</button>
     <p class="hint">When a stylus is detected, finger drawing turns off automatically, so your palm won't leave marks.
       Fingers can still zoom, rotate and undo.</p>
     <h2 class="gap">Drawing helpers</h2>
@@ -462,7 +482,8 @@
       <li><b>Pinch with two fingers</b> to zoom, rotate and move the canvas</li>
       <li><b>Tap with two fingers</b> to undo</li>
       <li><b>Tap with three fingers</b> to redo</li>
-      <li><b>Touch and hold with a finger</b> to pick a color (when finger drawing is off)</li>
+      <li><b>Touch and hold with one finger</b> for the quick wheel (or pick a color: see Customize quick wheel)</li>
+      <li><b>Right-click</b> or press <b>Q</b> for the quick wheel</li>
       <li><b>Alt + click</b> (Option + click on Mac) to pick a color</li>
       <li><b>Mouse wheel</b> to zoom, <b>Shift + wheel</b> to rotate</li>
       <li><b>Right-click and drag</b> to move the canvas</li>

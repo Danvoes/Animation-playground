@@ -221,6 +221,8 @@
     timelapse: saved.timelapse !== false,
     rigMode: saved.rigMode === 'setup' ? 'setup' : 'pose',
     rigRemove: saved.rigRemove !== false,
+    holdAction: saved.holdAction === 'pick' ? 'pick' : 'wheel',
+    wheelSlots: Array.isArray(saved.wheelSlots) && saved.wheelSlots.length === 8 ? saved.wheelSlots.slice() : null,
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
@@ -236,6 +238,7 @@
       selectMode: state.selectMode, tfUniform: state.tfUniform,
       exportSize: state.exportSize, exportLoops: state.exportLoops, exportSound: state.exportSound,
       showTimes: state.showTimes, timelapse: state.timelapse, rigMode: state.rigMode, rigRemove: state.rigRemove,
+      holdAction: state.holdAction, wheelSlots: state.wheelSlots,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -843,6 +846,7 @@
       tapSession.max = Math.max(tapSession.max, touches.size);
       clearTimeout(holdPickTimer);
       if (touches.size === 2) {
+        clearTimeout(wheelTimer);
         // A second finger means a gesture, not drawing. If the first finger
         // only just started a stroke, throw it away; otherwise keep it.
         if (picking) endPick(false);
@@ -856,7 +860,7 @@
         startGesture();
       } else if (touches.size === 1 && (state.fingerDraw || state.tool === 'select' || state.tool === 'transform' || state.tool === 'rig')) {
         startDrawing(e);
-      } else if (touches.size === 1) {
+      } else if (touches.size === 1 && state.holdAction === 'pick') {
         // Finger drawing is off: touch and hold to pick a color.
         holdPickTimer = setTimeout(() => {
           if (touches.size === 1 && tapSession && !tapSession.moved && !gesture && activePointer === null) {
@@ -864,12 +868,26 @@
           }
         }, 450);
       }
+      clearTimeout(wheelTimer);
+      if (touches.size === 1 && state.holdAction === 'wheel') {
+        // Touch and hold (without moving) opens the quick wheel.
+        wheelTimer = setTimeout(() => {
+          if (touches.size !== 1 || !tapSession || tapSession.moved || gesture || picking || !touches.has(e.pointerId)) return;
+          if (selDraft) { selDraft = null; drawSelOverlay(); }
+          if (tfDrag) { Object.assign(transform, tfDrag.start); tfDrag = null; refreshTransform(); }
+          if (rigDrag) { const d = rigDrag; rigDrag = null; if (d.moved) endRigDragSilently(d); }
+          if (activePointer !== null) abortStroke();
+          activePointer = null;
+          tapSession.drew = true; // not an undo tap
+          openWheel(e.clientX, e.clientY, e.pointerId);
+        }, 500);
+      }
       return;
     }
 
     if (e.pointerType === 'mouse' && (e.button === 1 || e.button === 2)) {
       e.preventDefault();
-      panDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+      panDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, button: e.button };
       try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       stage.classList.add('panning');
       cursorEl.style.display = 'none';
@@ -881,6 +899,8 @@
   });
 
   stage.addEventListener('pointermove', (e) => {
+    lastPointerXY = { x: e.clientX, y: e.clientY };
+    if (wheel && e.pointerId === wheel.pid) { wheelHover(e); return; }
     if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
       const t = touches.get(e.pointerId);
       const p = touchPoint(e);
@@ -916,9 +936,19 @@
   });
 
   function onPointerUp(e) {
+    if (wheel && e.pointerId === wheel.pid) {
+      touches.delete(e.pointerId);
+      tapSession = null;
+      wheelRelease();
+      return;
+    }
+    clearTimeout(wheelTimer);
     if (panDrag && e.pointerId === panDrag.id) {
+      const d = panDrag;
       panDrag = null;
       stage.classList.remove('panning');
+      // A right-click without dragging opens the quick wheel.
+      if (d.button === 2 && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 5) openWheel(e.clientX, e.clientY, null);
       return;
     }
     if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
@@ -2557,6 +2587,7 @@
     if (panel.id === 'panel-audio') buildAudioList();
     if (panel.id === 'panel-export') { refreshExportPanel(); refreshTimelapseInfo(); }
     if (panel.id === 'panel-rig') buildPartsGrid();
+    if (panel.id === 'panel-wheel') buildWheelSettings();
     if (panel.id === 'panel-menu') $('#p-name').value = project.name === 'Untitled' ? '' : project.name;
     const r = anchor.getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
@@ -2582,14 +2613,24 @@
   });
   // Tapping anywhere outside a panel closes it.
   document.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('#wheel') || e.target.closest('#ask')) return; // the wheel and question box keep panels open
     if (e.target.closest('.panel') || e.target.closest('[data-panel]') || e.target.closest('[data-tool]') ||
         e.target.closest('.frame-cell')) return;
     closePanels();
   }, true);
 
-  // Brush type buttons, each with a little preview stroke.
+  // Brush type buttons, each with a little preview stroke, grouped by kind.
   const brushGrid = $('#brush-types');
+  let lastGroup = null;
   Brushes.ORDER.forEach((t) => {
+    const group = Brushes.TYPES[t].group;
+    if (group !== lastGroup) {
+      lastGroup = group;
+      const h = document.createElement('div');
+      h.className = 'brush-group';
+      h.textContent = group;
+      brushGrid.appendChild(h);
+    }
     const b = document.createElement('button');
     b.className = 'brush-type';
     b.dataset.type = t;
@@ -4692,6 +4733,10 @@
     rigChanged(layer, true);
   }
 
+  function endRigDragSilently(d) {
+    rigDrag = d;
+    endRigDrag();
+  }
   function endRigDrag() {
     const d = rigDrag;
     rigDrag = null;
@@ -5103,9 +5148,211 @@
   $('#pe-cancel').addEventListener('click', () => finishPartEdit(false));
 
   // ---------------------------------------------------------------------------
+  // Quick wheel: touch and hold for a ring of your favourite tools and actions
+  // ---------------------------------------------------------------------------
+  let wheel = null;        // { pid, x, y, hover } while open
+  let wheelTimer = null;
+  let lastPointerXY = null;
+  const wheelEl = $('#wheel'), wheelRing = $('#wheel-ring');
+  const svgOf = (sel) => { const el = $(sel + ' svg'); return el ? el.outerHTML : ''; };
+  const ICO = {
+    fit: '<svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>',
+    gallery: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="8" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/></svg>',
+    deselect: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="3 2.5"/><path d="m9 9 6 6M15 9l-6 6"/></svg>',
+    swap: '<svg viewBox="0 0 24 24"><path d="M7 7h11l-3-3M17 17H6l3 3"/></svg>',
+    close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+    clear: '<svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
+  };
+  // Everything a slot can do: id -> { label, group, icon(), run() }
+  const WHEEL_ACTIONS = {};
+  const addAction = (id, label, group, icon, run) => { WHEEL_ACTIONS[id] = { label, group, icon, run }; };
+  [['brush', 'Brush'], ['eraser', 'Eraser'], ['blend', 'Blend'], ['eyedropper', 'Pick color'],
+    ['select', 'Select'], ['transform', 'Transform'], ['rig', 'Rig']].forEach(([t, label]) => {
+    addAction('tool:' + t, label, 'Tools', () => svgOf(`[data-tool="${t}"]`), () => setTool(t));
+  });
+  addAction('undo', 'Undo', 'Actions', () => svgOf('#btn-undo'), () => undo());
+  addAction('redo', 'Redo', 'Actions', () => svgOf('#btn-redo'), () => redo());
+  addAction('play', 'Play / stop', 'Actions', () => '<svg viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></svg>', () => togglePlay());
+  addAction('frame:new', 'New frame', 'Actions', () => svgOf('#f-add'), () => $('#f-add').click());
+  addAction('frame:dup', 'Copy frame', 'Actions', () => svgOf('#f-dup'), () => $('#f-dup').click());
+  addAction('layer:new', 'New layer', 'Actions', () => svgOf('#btn-layers'), () => $('#l-add').click());
+  addAction('onion', 'Onion skin', 'Actions', () => svgOf('#btn-onion'), () => $('#btn-onion').click());
+  addAction('prevcolor', 'Last color', 'Actions', () => `<span class="wsw" style="background:${recent[1] || state.color}"></span>`,
+    () => { if (recent[1]) { picker.setHex(recent[1]); addRecent(state.color); } else toast('Use another color first.'); });
+  addAction('deselect', 'Deselect', 'Actions', () => ICO.deselect, () => setSelection(null));
+  addAction('fit', 'Fit to screen', 'Actions', () => ICO.fit, () => fitView());
+  addAction('clear', 'Clear layer', 'Actions', () => ICO.clear, () => clearLayer());
+  addAction('panel:color', 'Colors', 'Panels', () => `<span class="wsw" style="background:${state.color}"></span>`,
+    () => openPanel($('#panel-color'), $('#btn-color')));
+  addAction('panel:layers', 'Layers', 'Panels', () => svgOf('#btn-layers'), () => openPanel($('#panel-layers'), $('#btn-layers')));
+  addAction('panel:brush', 'Brushes', 'Panels', () => svgOf('[data-tool="brush"]'), () => {
+    if (state.tool !== 'brush') setTool('brush');
+    openPanel($('#panel-brush'), $('[data-tool="brush"]'));
+  });
+  addAction('gallery', 'My projects', 'Panels', () => ICO.gallery, () => openGallery());
+  Brushes.ORDER.forEach((t) => {
+    addAction('brush:' + t, Brushes.TYPES[t].label, 'Brushes', () => svgOf('[data-tool="brush"]'), () => {
+      state.brushType = t;
+      saveSettings();
+      if (state.tool !== 'brush') setTool('brush'); else syncUI();
+      toast(Brushes.TYPES[t].label, 900);
+    });
+  });
+  const DEFAULT_WHEEL = ['undo', 'redo', 'tool:brush', 'tool:eraser', 'tool:eyedropper', 'frame:new', 'play', 'panel:layers'];
+  const wheelSlots = () => {
+    const slots = state.wheelSlots || DEFAULT_WHEEL;
+    return slots.map((id, i) => (WHEEL_ACTIONS[id] ? id : DEFAULT_WHEEL[i]));
+  };
+
+  const R_WHEEL = 96;
+  function openWheel(cx, cy, pid) {
+    if (partEdit || exporting || galleryOpen() || askOpen()) return;
+    closePanels();
+    stopPlay();
+    cursorEl.style.display = 'none';
+    // Keep the whole ring on screen.
+    const pad = R_WHEEL + 44;
+    const x = clamp(cx, pad, Math.max(pad, window.innerWidth - pad));
+    const y = clamp(cy, pad, Math.max(pad, window.innerHeight - pad - 30));
+    wheelRing.innerHTML = '';
+    const disc = document.createElement('div');
+    disc.className = 'wheel-disc';
+    disc.style.left = x + 'px';
+    disc.style.top = y + 'px';
+    wheelRing.appendChild(disc);
+    wheelSlots().forEach((id, i) => {
+      const act = WHEEL_ACTIONS[id];
+      const a = -Math.PI / 2 + (i * Math.PI * 2) / 8;
+      const b = document.createElement('button');
+      b.className = 'wheel-slot';
+      b.dataset.i = i;
+      b.style.left = x + Math.cos(a) * R_WHEEL + 'px';
+      b.style.top = y + Math.sin(a) * R_WHEEL + 'px';
+      b.title = `${act.label} (${i + 1})`;
+      b.innerHTML = act.icon() + '<span class="wlabel"></span>';
+      b.querySelector('.wlabel').textContent = act.label;
+      b.addEventListener('click', (ev) => { ev.stopPropagation(); if (!wheelCalm()) runSlot(i); });
+      wheelRing.appendChild(b);
+    });
+    const center = document.createElement('button');
+    center.className = 'wheel-center';
+    center.title = 'Close (Esc)';
+    center.innerHTML = ICO.close;
+    center.style.left = x + 'px';
+    center.style.top = y + 'px';
+    center.addEventListener('click', (ev) => { ev.stopPropagation(); if (!wheelCalm()) closeWheel(); });
+    wheelRing.appendChild(center);
+    const edit = document.createElement('button');
+    edit.className = 'wheel-edit';
+    edit.textContent = 'Edit wheel';
+    edit.style.left = x + 'px';
+    edit.style.top = y + R_WHEEL + 42 + 'px';
+    edit.addEventListener('click', (ev) => { ev.stopPropagation(); closeWheel(); openWheelSettings(); });
+    wheelRing.appendChild(edit);
+    wheelEl.hidden = false;
+    wheel = { pid, x, y, hover: -1 };
+    if (navigator.vibrate) navigator.vibrate(12);
+  }
+  function closeWheel() {
+    wheel = null;
+    wheelEl.hidden = true;
+    wheelRing.innerHTML = '';
+  }
+  // While your finger is still down: highlight the slot it points at.
+  function wheelHover(e) {
+    const dx = e.clientX - wheel.x, dy = e.clientY - wheel.y;
+    let hover = -1;
+    if (Math.hypot(dx, dy) > 45) {
+      const a = Math.atan2(dy, dx) + Math.PI / 2;
+      hover = ((Math.round(a / (Math.PI / 4)) % 8) + 8) % 8;
+    }
+    if (hover === wheel.hover) return;
+    wheel.hover = hover;
+    $$('.wheel-slot').forEach((b) => b.classList.toggle('hover', +b.dataset.i === hover));
+  }
+  // Letting go: run the highlighted slot, or keep the wheel open to tap one.
+  function wheelRelease() {
+    if (wheel.hover >= 0) runSlot(wheel.hover);
+    else {
+      wheel.pid = null;
+      // Lifting a finger can also count as a tap on whatever is under it (the close
+      // button): ignore taps for a moment so the wheel stays open.
+      wheel.calmUntil = performance.now() + 450;
+      $$('.wheel-slot').forEach((b) => b.classList.remove('hover'));
+    }
+  }
+  const wheelCalm = () => wheel && wheel.calmUntil && performance.now() < wheel.calmUntil;
+  function runSlot(i) {
+    const act = WHEEL_ACTIONS[wheelSlots()[i]];
+    closeWheel();
+    if (act) act.run();
+  }
+  wheelEl.addEventListener('pointerdown', (e) => { if ((e.target === wheelEl || e.target === wheelRing) && !wheelCalm()) closeWheel(); });
+  wheelEl.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // ---- Customizing the wheel ----
+  const SLOT_NAMES = ['Top', 'Top right', 'Right', 'Bottom right', 'Bottom', 'Bottom left', 'Left', 'Top left'];
+  function buildWheelSettings() {
+    const box = $('#wheel-slots');
+    box.innerHTML = '';
+    const slots = wheelSlots();
+    const groups = {};
+    for (const [id, a] of Object.entries(WHEEL_ACTIONS)) (groups[a.group] = groups[a.group] || []).push([id, a.label]);
+    slots.forEach((id, i) => {
+      const row = document.createElement('label');
+      row.className = 'wslot-row';
+      const name = document.createElement('span');
+      name.textContent = `${i + 1}. ${SLOT_NAMES[i]}`;
+      const sel = document.createElement('select');
+      sel.id = 'wheel-slot-' + i;
+      for (const [g, items] of Object.entries(groups)) {
+        const og = document.createElement('optgroup');
+        og.label = g;
+        for (const [aid, label] of items) {
+          const opt = document.createElement('option');
+          opt.value = aid;
+          opt.textContent = label;
+          og.appendChild(opt);
+        }
+        sel.appendChild(og);
+      }
+      sel.value = id;
+      sel.addEventListener('change', () => {
+        const next = wheelSlots();
+        next[i] = sel.value;
+        state.wheelSlots = next;
+        saveSettings();
+      });
+      row.append(name, sel);
+      box.appendChild(row);
+    });
+    $$('#hold-mode button').forEach((b) => b.classList.toggle('active', b.dataset.v === state.holdAction));
+  }
+  function openWheelSettings() { openPanel($('#panel-wheel'), $('#btn-menu')); }
+  $('#m-wheel').addEventListener('click', openWheelSettings);
+  $$('#hold-mode button').forEach((b) => b.addEventListener('click', () => {
+    state.holdAction = b.dataset.v;
+    saveSettings();
+    buildWheelSettings();
+  }));
+  $('#wheel-reset').addEventListener('click', () => {
+    state.wheelSlots = null;
+    state.holdAction = 'wheel';
+    saveSettings();
+    buildWheelSettings();
+    toast('The quick wheel is back to the standard tools.');
+  });
+
+  // ---------------------------------------------------------------------------
   // Keyboard shortcuts
   // ---------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
+    if (wheel) {
+      e.preventDefault();
+      if (e.key === 'Escape' || e.key.toLowerCase() === 'q') closeWheel();
+      else if (/^[1-8]$/.test(e.key)) runSlot(+e.key - 1);
+      return;
+    }
     if (askOpen()) {
       // Only the question box listens; Escape cancels it wherever the focus is.
       if (e.key === 'Escape' && askDone) { e.preventDefault(); askDone(false); }
@@ -5155,6 +5402,11 @@
     else if (k === 'v') setTool('transform');
     else if (k === 'l') setTool('select');
     else if (k === 'r') setTool('rig');
+    else if (k === 'q') {
+      const sr = stage.getBoundingClientRect();
+      const p = lastPointerXY || { x: sr.left + sr.width / 2, y: sr.top + sr.height / 2 };
+      openWheel(p.x, p.y, null);
+    }
     else if (k === 'enter' && transform) { applyTransform(); setTool(tfPrevTool); }
     else if (k === 'escape') {
       if ($$('.panel').some((x) => !x.hidden)) closePanels();
