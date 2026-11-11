@@ -261,7 +261,7 @@ input[type=range] { accent-color: var(--accent); width: 130px; height: 28px; mar
 }
 
 #toast {
-  position: fixed; left: 50%; bottom: 20px; z-index: 30;
+  position: fixed; left: 50%; bottom: 130px; z-index: 30;
   transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
   max-width: calc(100vw - 32px);
   padding: 10px 16px; border-radius: 10px;
@@ -270,3 +270,56 @@ input[type=range] { accent-color: var(--accent); width: 130px; height: 28px; mar
   transition: opacity .2s, transform .2s;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ============ Stage 2: timeline and onion skin ============ */
+#onion {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none;
+  mix-blend-mode: multiply; /* faint colored lines that don't hide your drawing */
+}
+.timeline {
+  display: flex; align-items: center; gap: 8px 14px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+.tl-group { display: flex; align-items: center; gap: 4px; flex: none; }
+.btn-narrow { min-width: 40px; }
+.fps { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); padding: 0 4px; }
+.fps input[type=range] { width: 100px; }
+.fps output { min-width: 44px; color: var(--text); font-variant-numeric: tabular-nums; }
+.frame-counter { font-size: 12px; color: var(--muted); padding: 0 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.frame-strip {
+  position: relative;
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 6px;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 4px 2px;
+  touch-action: pan-x;
+  scrollbar-width: thin;
+}
+.frame-cell {
+  flex: none;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 3px;
+  border: 2px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--muted);
+  font: inherit; font-size: 11px; cursor: pointer;
+}
+.frame-cell canvas {
+  display: block; width: 88px; height: 50px; border-radius: 4px;
+  background: #fff; box-shadow: 0 0 0 1px var(--border);
+}
+.frame-cell:hover { background: var(--accent-soft); }
+.frame-cell.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+.hint { font-size: 12px; color: var(--muted); margin: 10px 0 0; line-height: 1.45; }
+.hint .red { color: #e5484d; }
+.hint .green { color: #30a46c; }
+.layer-props .check { margin: 4px 0 2px; }
+
+@media (max-width: 900px) {
+  .timeline { flex-wrap: wrap; padding: 6px; }
+  .frame-strip { order: 3; flex-basis: 100%; }
+}

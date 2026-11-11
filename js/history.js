@@ -14,7 +14,7 @@
       this.onChange = null;
     }
 
-    /** step = { label, undo(), redo() } */
+    /** step = { label, undo(), redo(), frame? (the frame it changed) } */
     push(step) {
       this.undoStack.push(step);
       if (this.undoStack.length > this.limit) this.undoStack.shift();
@@ -24,20 +24,20 @@
 
     undo() {
       const step = this.undoStack.pop();
-      if (!step) return false;
+      if (!step) return null;
       step.undo();
       this.redoStack.push(step);
       this._changed();
-      return true;
+      return step;
     }
 
     redo() {
       const step = this.redoStack.pop();
-      if (!step) return false;
+      if (!step) return null;
       step.redo();
       this.undoStack.push(step);
       this._changed();
-      return true;
+      return step;
     }
 
     get canUndo() { return this.undoStack.length > 0; }

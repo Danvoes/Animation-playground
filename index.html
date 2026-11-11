@@ -77,9 +77,51 @@
   <main id="stage">
     <div id="canvas-wrap">
       <canvas id="canvas"></canvas>
+      <canvas id="onion"></canvas>
       <div id="cursor"></div>
     </div>
   </main>
+
+  <!-- ===== Timeline: playback and frames ===== -->
+  <footer class="timeline">
+    <div class="tl-group">
+      <button class="btn" id="btn-play" title="Play / stop (Space)">
+        <svg viewBox="0 0 24 24" id="play-icon"><path d="M7 4.5v15l12-7.5z"/></svg>
+        <span id="play-label">Play</span>
+      </button>
+      <label class="fps" title="Playback speed in frames per second">
+        <span>Speed</span>
+        <input type="range" id="fps" min="1" max="30">
+        <output id="fps-out">12 fps</output>
+      </label>
+      <button class="btn" id="btn-onion" title="Onion skin: show nearby frames faintly">
+        <svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>
+        <span>Onion skin</span>
+      </button>
+      <button class="btn btn-narrow" id="btn-onion-settings" data-panel="panel-onion" title="Onion skin settings">
+        <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>
+        <span>More</span>
+      </button>
+    </div>
+
+    <div class="frame-strip" id="frame-strip"></div>
+
+    <div class="tl-group">
+      <span class="frame-counter" id="frame-counter">1 / 1</span>
+      <button class="btn" id="f-add" title="Add an empty frame after this one">
+        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 9v6M9 12h6"/></svg>
+        <span>New frame</span>
+      </button>
+      <button class="btn" id="f-dup" title="Copy this frame (good for small changes)">
+        <svg viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V5a2 2 0 0 1 2-2h10a1 1 0 0 1 1 1v1"/></svg>
+        <span>Duplicate</span>
+      </button>
+      <button class="btn" id="f-del" title="Delete this frame">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+        <span>Delete</span>
+      </button>
+    </div>
+  </footer>
 
   <!-- ===== Pop-out panel: brush / eraser settings ===== -->
   <div class="panel" id="panel-brush" hidden>
@@ -169,12 +211,35 @@
         <label for="l-blend">Blend mode</label>
         <select id="l-blend"></select>
       </div>
+      <label class="check"><input type="checkbox" id="l-static"> Same on every frame (for backgrounds)</label>
       <div class="mini-grid three">
         <button class="mini" id="l-up" title="Move the selected layer up the stack">Move up</button>
         <button class="mini" id="l-down" title="Move the selected layer down the stack">Move down</button>
         <button class="mini" id="l-rename" title="Rename the selected layer">Rename</button>
       </div>
     </div>
+  </div>
+
+  <!-- ===== Pop-out panel: onion skin settings ===== -->
+  <div class="panel" id="panel-onion" hidden>
+    <h2>Onion skin</h2>
+    <div class="field">
+      <label for="o-prev">Before</label>
+      <input type="range" id="o-prev" min="0" max="3">
+      <output id="o-prev-out"></output>
+    </div>
+    <div class="field">
+      <label for="o-next">After</label>
+      <input type="range" id="o-next" min="0" max="3">
+      <output id="o-next-out"></output>
+    </div>
+    <div class="field">
+      <label for="o-opacity">Strength</label>
+      <input type="range" id="o-opacity" min="5" max="80">
+      <output id="o-opacity-out"></output>
+    </div>
+    <p class="hint">Earlier frames show in <b class="red">red</b>, later frames in <b class="green">green</b>.
+      Layers set to "same on every frame" aren't shown.</p>
   </div>
 
   <!-- ===== Pop-out panel: color wheel ===== -->

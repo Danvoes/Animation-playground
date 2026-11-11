@@ -22,6 +22,10 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
   previous/current color, the last 10 colors you used, and an eyedropper
 - **Pick color** tool: tap your drawing to grab a color from it
 - **Undo / Redo** (last 50 steps, including layer changes) and **Clear** (clears the selected layer)
+- **Frames**: add, duplicate and delete frames from the strip at the bottom
+- **Onion skin**: earlier frames show faintly in red, later frames in green (choose how many)
+- **Playback**: Play / Stop with adjustable speed (1–30 frames per second)
+- **Same on every frame**: a layer setting for backgrounds you draw once
 - Works with mouse, finger and stylus
 
 ### Keyboard shortcuts
@@ -32,6 +36,9 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | B / E / S / I | Brush / Eraser / Blend / Pick color |
 | [ and ] | Smaller / bigger brush |
+| Space | Play / stop |
+| ← → (or , .) | Previous / next frame |
+| O | Onion skin on / off |
 | Esc | Close a panel |
 
 ## Project files
@@ -48,7 +55,6 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 
 ## Coming next
 
-- **Stage 2:** frames, onion skinning and playback
 - **Stage 3:** importing images
 - **Stage 4:** audio
 - **Stage 5:** saving and reopening projects

@@ -1,6 +1,16 @@
 /*
  * app.js
- * The main program: connects the toolbar, panels, canvas, layers, brushes and undo.
+ * The main program: connects the toolbar, panels, canvas, layers, frames,
+ * playback, brushes and undo.
+ *
+ * How a project is stored:
+ *   - doc.frames: the list of frames, in order.
+ *   - doc.layers: the stack of layers (index 0 = bottom). Every frame shares
+ *     the same layers.
+ *   - Each layer keeps one drawing ("cel") per frame, in layer.cels. A cel is
+ *     only created once you draw on it, so empty layers cost no memory.
+ *   - A layer marked "same on every frame" keeps a single cel (key "static")
+ *     that shows on all frames, which is handy for backgrounds.
  */
 (function () {
   'use strict';
@@ -9,6 +19,7 @@
   const DOC_W = 1280, DOC_H = 720;
   const SIZE_MAX = 200;
   const MAX_LAYERS = 20;
+  const MAX_FRAMES = 500;
 
   // Layer blend modes: [browser name, name shown to you]
   const BLEND_MODES = [
@@ -23,6 +34,7 @@
   const $ = (s) => document.querySelector(s);
   const $$ = (s) => Array.from(document.querySelectorAll(s));
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const DPR = Math.max(1, window.devicePixelRatio || 1);
 
   // Small wrapper around browser storage. It may be unavailable (private mode), so never rely on it.
   const store = {
@@ -39,6 +51,11 @@
     c.width = w; c.height = h;
     return c;
   }
+  function copyCanvas(src) {
+    const c = makeCanvas(DOC_W, DOC_H);
+    if (src) c.getContext('2d').drawImage(src, 0, 0);
+    return c;
+  }
 
   // A short message that pops up at the bottom of the screen.
   const toastEl = $('#toast');
@@ -47,40 +64,82 @@
     toastEl.textContent = msg;
     toastEl.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2400);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2800);
   }
 
   // ---------------------------------------------------------------------------
-  // The drawing ("document"): a stack of layers. layers[0] is the bottom.
+  // The project ("document")
   // ---------------------------------------------------------------------------
-  const doc = { width: DOC_W, height: DOC_H, layers: [], active: null };
-  let layerCounter = 0;
+  const doc = { layers: [], frames: [], active: null, frame: null, fps: 12 };
+  let layerCounter = 0, layerIds = 0, frameIds = 0;
 
   function newLayer(name) {
-    const canvas = makeCanvas(DOC_W, DOC_H);
     layerCounter++;
     return {
+      id: 'l' + (++layerIds),
       name: name || 'Layer ' + layerCounter,
-      canvas,
-      ctx: canvas.getContext('2d'),
+      cels: new Map(),
+      static: false,
       visible: true,
       locked: false,
       opacity: 1,
       blend: 'source-over',
     };
   }
+  const newFrame = () => ({ id: 'f' + (++frameIds) });
+
   const activeLayer = () => doc.active;
-  const indexOf = (layer) => doc.layers.indexOf(layer);
+  const layerIndex = (layer) => doc.layers.indexOf(layer);
+  const frameIndex = (frame) => doc.frames.indexOf(frame || doc.frame);
   function putLayer(layer, index) { doc.layers.splice(index, 0, layer); }
   function takeLayer(layer) {
-    const i = indexOf(layer);
+    const i = layerIndex(layer);
     if (i >= 0) doc.layers.splice(i, 1);
     return i;
   }
 
-  const first = newLayer();
-  doc.layers.push(first);
-  doc.active = first;
+  const celKey = (layer, frame) => (layer.static ? 'static' : frame.id);
+  const celOf = (layer, frame) => layer.cels.get(celKey(layer, frame)) || null;
+  function ensureCel(layer, frame) {
+    const key = celKey(layer, frame);
+    let c = layer.cels.get(key);
+    if (!c) { c = makeCanvas(DOC_W, DOC_H); layer.cels.set(key, c); }
+    return c;
+  }
+
+  // Start with one layer and one frame.
+  {
+    const layer = newLayer();
+    const frame = newFrame();
+    doc.layers.push(layer);
+    doc.frames.push(frame);
+    doc.active = layer;
+    doc.frame = frame;
+  }
+
+  /**
+   * Draw a whole frame (all visible layers) into a 2D context.
+   * opts: { w, h, transparent (no white paper), skipStatic, override: {layer, canvas} }
+   */
+  function drawFrame(ctx, frame, opts) {
+    opts = opts || {};
+    const W = opts.w || DOC_W, H = opts.h || DOC_H;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    if (opts.transparent) ctx.clearRect(0, 0, W, H);
+    else { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H); }
+    for (const layer of doc.layers) {
+      if (!layer.visible || (opts.skipStatic && layer.static)) continue;
+      const src = opts.override && opts.override.layer === layer ? opts.override.canvas : celOf(layer, frame);
+      if (!src) continue;
+      ctx.globalAlpha = layer.opacity;
+      ctx.globalCompositeOperation = layer.blend;
+      ctx.drawImage(src, 0, 0, W, H);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  }
 
   const display = $('#canvas');
   display.width = DOC_W;
@@ -105,14 +164,17 @@
     brushes: {},
     eraser: Object.assign({ size: 30, softness: 0, smoothing: 20 }, saved.eraser || {}),
     blend: Object.assign({ mode: 'smudge', size: 40, strength: 50, smoothing: 20 }, saved.blend || {}),
+    onion: Object.assign({ enabled: true, prev: 1, next: 0, opacity: 35 }, saved.onion || {}),
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
   });
+  doc.fps = clamp(saved.fps || 12, 1, 30);
   function saveSettings() {
     store.set('ap.settings.v1', {
       brushType: state.brushType, color: state.color, pressure: state.pressure,
       brushes: state.brushes, eraser: state.eraser, blend: state.blend,
+      onion: state.onion, fps: doc.fps,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -136,12 +198,26 @@
   history.onChange = () => {
     $('#btn-undo').disabled = !history.canUndo;
     $('#btn-redo').disabled = !history.canRedo;
-    refreshLayersPanel();
   };
 
   const busy = () => !!(stroke || blendStroke);
-  function undo() { if (!busy() && history.undo()) layersChanged(); }
-  function redo() { if (!busy() && history.redo()) layersChanged(); }
+
+  function undo() { if (!busy()) { stopPlay(); afterHistory(history.undo()); } }
+  function redo() { if (!busy()) { stopPlay(); afterHistory(history.redo()); } }
+
+  // After undo/redo: go to the frame that changed, and refresh everything.
+  let stripSignature = '';
+  function afterHistory(step) {
+    if (!step) return;
+    if (step.frame && doc.frames.includes(step.frame)) doc.frame = step.frame;
+    if (!doc.frames.includes(doc.frame)) doc.frame = doc.frames[0];
+    if (!doc.layers.includes(doc.active)) doc.active = doc.layers[0];
+    if (doc.frames.map((f) => f.id).join() !== stripSignature) buildStrip();
+    else if (step.frame && !step.allFrames) markThumb(step.frame);
+    else markAllThumbs();
+    goFrame(doc.frame);
+    layersChanged();
+  }
 
   // Checks before changing a layer's pixels.
   function canEdit(layer) {
@@ -150,24 +226,40 @@
     return true;
   }
 
+  function pushPixelStep(label, layer, cel, rect, before, after) {
+    const ctx = cel.getContext('2d');
+    history.push({
+      label,
+      frame: doc.frame,
+      allFrames: layer.static,
+      undo() { ctx.putImageData(before, rect.x, rect.y); },
+      redo() { ctx.putImageData(after, rect.x, rect.y); },
+    });
+    if (layer.static) markAllThumbs(); else markThumb(doc.frame);
+    refreshLayersPanel();
+  }
+
   function clearLayer() {
     if (busy()) return;
+    stopPlay();
     const layer = activeLayer();
     if (!canEdit(layer)) return;
-    const before = layer.ctx.getImageData(0, 0, DOC_W, DOC_H);
-    layer.ctx.clearRect(0, 0, DOC_W, DOC_H);
-    history.push({
-      label: 'Clear',
-      undo() { layer.ctx.putImageData(before, 0, 0); },
-      redo() { layer.ctx.clearRect(0, 0, DOC_W, DOC_H); },
-    });
+    const cel = celOf(layer, doc.frame);
+    if (!cel) { toast(`"${layer.name}" is already empty on this frame.`); return; }
+    const ctx = cel.getContext('2d');
+    const rect = { x: 0, y: 0, w: DOC_W, h: DOC_H };
+    const before = ctx.getImageData(0, 0, DOC_W, DOC_H);
+    ctx.clearRect(0, 0, DOC_W, DOC_H);
+    const after = ctx.getImageData(0, 0, DOC_W, DOC_H);
+    pushPixelStep('Clear', layer, cel, rect, before, after);
     requestRender();
   }
 
   // ---------------------------------------------------------------------------
-  // Drawing what you see: white paper, then each visible layer, bottom to top.
+  // Drawing what you see
   // ---------------------------------------------------------------------------
   let renderQueued = false;
+  let onionDirty = true;
   function requestRender() {
     if (renderQueued) return;
     renderQueued = true;
@@ -177,36 +269,64 @@
     renderQueued = false;
     if (stroke && stroke.needsTick) stroke.tick();
 
-    dctx.globalCompositeOperation = 'source-over';
-    dctx.globalAlpha = 1;
-    dctx.fillStyle = '#ffffff';
-    dctx.fillRect(0, 0, DOC_W, DOC_H);
-
-    for (const layer of doc.layers) {
-      if (!layer.visible) continue;
-      let src = layer.canvas;
-      if (stroke && layer === doc.active) {
-        // Show the layer as it will look once this stroke is finished.
-        sctx.globalCompositeOperation = 'source-over';
-        sctx.globalAlpha = 1;
-        sctx.clearRect(0, 0, DOC_W, DOC_H);
-        sctx.drawImage(layer.canvas, 0, 0);
-        sctx.globalAlpha = stroke.opacity;
-        sctx.globalCompositeOperation = stroke.composite;
-        sctx.drawImage(buffer, 0, 0);
-        sctx.globalAlpha = 1;
-        sctx.globalCompositeOperation = 'source-over';
-        src = scratch;
-      }
-      dctx.globalAlpha = layer.opacity;
-      dctx.globalCompositeOperation = layer.blend;
-      dctx.drawImage(src, 0, 0);
+    let override = null;
+    if (stroke) {
+      // Show the layer as it will look once this stroke is finished.
+      const layer = activeLayer();
+      const cel = celOf(layer, doc.frame);
+      sctx.globalCompositeOperation = 'source-over';
+      sctx.globalAlpha = 1;
+      sctx.clearRect(0, 0, DOC_W, DOC_H);
+      if (cel) sctx.drawImage(cel, 0, 0);
+      sctx.globalAlpha = stroke.opacity;
+      sctx.globalCompositeOperation = stroke.composite;
+      sctx.drawImage(buffer, 0, 0);
+      sctx.globalAlpha = 1;
+      sctx.globalCompositeOperation = 'source-over';
+      override = { layer, canvas: scratch };
     }
-    dctx.globalAlpha = 1;
-    dctx.globalCompositeOperation = 'source-over';
+    drawFrame(dctx, doc.frame, { override });
+    if (onionDirty) drawOnion();
 
     if (stroke && stroke.needsTick) requestRender(); // keep the airbrush spraying
   }
+
+  // Onion skin: nearby frames drawn faintly in color on a see-through canvas
+  // that sits on top of the drawing. It's drawn at half size to stay fast.
+  const onionCanvas = $('#onion');
+  onionCanvas.width = DOC_W / 2;
+  onionCanvas.height = DOC_H / 2;
+  const octx = onionCanvas.getContext('2d');
+  const tint = makeCanvas(DOC_W / 2, DOC_H / 2), tctx = tint.getContext('2d');
+  function drawOnion() {
+    onionDirty = false;
+    octx.globalAlpha = 1;
+    octx.clearRect(0, 0, onionCanvas.width, onionCanvas.height);
+    const o = state.onion;
+    if (!o.enabled || playing) return;
+    const idx = frameIndex();
+    const W = tint.width, H = tint.height;
+    const ghost = (frame, color, alpha) => {
+      drawFrame(tctx, frame, { w: W, h: H, transparent: true, skipStatic: true });
+      tctx.globalCompositeOperation = 'source-atop';
+      tctx.fillStyle = color;
+      tctx.fillRect(0, 0, W, H);
+      tctx.globalCompositeOperation = 'source-over';
+      octx.globalAlpha = alpha;
+      octx.drawImage(tint, 0, 0);
+    };
+    const base = o.opacity / 100;
+    for (let d = o.prev; d >= 1; d--) {
+      const f = doc.frames[idx - d];
+      if (f) ghost(f, '#e5484d', base * (1 - (d - 1) / (o.prev + 1)));
+    }
+    for (let d = o.next; d >= 1; d--) {
+      const f = doc.frames[idx + d];
+      if (f) ghost(f, '#30a46c', base * (1 - (d - 1) / (o.next + 1)));
+    }
+    octx.globalAlpha = 1;
+  }
+  function refreshOnion() { onionDirty = true; requestRender(); }
 
   // ---------------------------------------------------------------------------
   // Mouse / touch / stylus input
@@ -214,7 +334,7 @@
   let activePointer = null; // only one finger/pen draws at a time
   let stroke = null;        // brush or eraser stroke in progress
   let blendStroke = null;   // Blend tool stroke in progress
-  let blendLayer = null;
+  let strokeTarget = null;  // { layer, cel } being drawn on
   let smooth = null;
   let lastRaw = null;
   let strokeSmoothing = 0;
@@ -243,6 +363,7 @@
     if (activePointer !== null) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
+    if (playing) { stopPlay(); return; }
     const p = toDoc(e);
 
     if (state.tool === 'eyedropper') {
@@ -263,9 +384,11 @@
     lastRaw = p;
 
     if (state.tool === 'blend') {
-      blendLayer = layer;
+      const cel = celOf(layer, doc.frame);
+      if (!cel) { activePointer = null; toast('There is nothing to blend on this layer and frame yet.'); return; }
+      strokeTarget = { layer, cel };
       blendStroke = BlendTool.createBlendStroke({
-        ctx: layer.ctx, mode: st.mode, size: st.size, strength: st.strength / 100, pressure: state.pressure,
+        ctx: cel.getContext('2d'), mode: st.mode, size: st.size, strength: st.strength / 100, pressure: state.pressure,
       });
       blendStroke.begin({ x: p.x, y: p.y, pressure: p.pressure });
       blendStroke.flush();
@@ -274,6 +397,7 @@
     }
 
     const isEraser = state.tool === 'eraser';
+    strokeTarget = { layer, cel: null };
     stroke = Brushes.createStroke({
       type: isEraser ? 'eraser' : state.brushType,
       ctx: bctx,
@@ -327,30 +451,26 @@
   display.addEventListener('pointerleave', () => { if (activePointer === null) cursorEl.style.display = 'none'; });
   display.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  function pushPixelStep(label, layer, rect, before, after) {
-    history.push({
-      label,
-      undo() { layer.ctx.putImageData(before, rect.x, rect.y); },
-      redo() { layer.ctx.putImageData(after, rect.x, rect.y); },
-    });
-  }
-
   // Blend the finished stroke onto the layer, and save an undo step
   // holding just the changed area (much smaller than the whole picture).
   function commitStroke() {
     const s = stroke;
     stroke = null;
     const rect = s.bounds();
-    if (rect) {
-      const layer = activeLayer();
-      const before = layer.ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
-      layer.ctx.save();
-      layer.ctx.globalAlpha = s.opacity;
-      layer.ctx.globalCompositeOperation = s.composite;
-      layer.ctx.drawImage(buffer, 0, 0);
-      layer.ctx.restore();
-      const after = layer.ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
-      pushPixelStep('Stroke', layer, rect, before, after);
+    const { layer } = strokeTarget;
+    strokeTarget = null;
+    // An eraser stroke on an empty spot changes nothing.
+    if (rect && !(s.composite === 'destination-out' && !celOf(layer, doc.frame))) {
+      const cel = ensureCel(layer, doc.frame);
+      const ctx = cel.getContext('2d');
+      const before = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
+      ctx.save();
+      ctx.globalAlpha = s.opacity;
+      ctx.globalCompositeOperation = s.composite;
+      ctx.drawImage(buffer, 0, 0);
+      ctx.restore();
+      const after = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
+      pushPixelStep('Stroke', layer, cel, rect, before, after);
     }
     bctx.setTransform(1, 0, 0, 1, 0, 0);
     bctx.clearRect(0, 0, DOC_W, DOC_H);
@@ -359,13 +479,13 @@
 
   function commitBlend() {
     const res = blendStroke.end();
-    const layer = blendLayer;
+    const { layer, cel } = strokeTarget;
     blendStroke = null;
-    blendLayer = null;
+    strokeTarget = null;
     if (res) {
       const { rect, before } = res;
-      const after = layer.ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
-      pushPixelStep('Blend', layer, rect, before, after);
+      const after = cel.getContext('2d').getImageData(rect.x, rect.y, rect.w, rect.h);
+      pushPixelStep('Blend', layer, cel, rect, before, after);
     }
     requestRender();
   }
@@ -380,7 +500,7 @@
   // The circle that shows your brush size under the mouse or stylus.
   const cursorEl = $('#cursor');
   function updateCursor(e) {
-    if (e.pointerType === 'touch' || state.tool === 'eyedropper') {
+    if (e.pointerType === 'touch' || state.tool === 'eyedropper' || playing) {
       cursorEl.style.display = 'none';
       return;
     }
@@ -395,7 +515,7 @@
   // Keep the canvas as big as possible while keeping its shape.
   const stage = $('#stage');
   function fit() {
-    const pad = stage.clientWidth < 640 ? 8 : 20;
+    const pad = stage.clientWidth < 640 ? 8 : 16;
     const scale = Math.min((stage.clientWidth - pad * 2) / DOC_W, (stage.clientHeight - pad * 2) / DOC_H);
     display.style.width = Math.max(50, Math.floor(DOC_W * scale)) + 'px';
     display.style.height = Math.max(28, Math.floor(DOC_H * scale)) + 'px';
@@ -406,6 +526,226 @@
   // Stop the page from zooming or scrolling while drawing on touch screens.
   document.addEventListener('gesturestart', (e) => e.preventDefault());
   document.addEventListener('touchmove', (e) => { if (e.target.closest('#stage')) e.preventDefault(); }, { passive: false });
+
+  // ---------------------------------------------------------------------------
+  // Frames: the strip of thumbnails at the bottom
+  // ---------------------------------------------------------------------------
+  const strip = $('#frame-strip');
+  const cells = new Map(); // frame -> { btn, canvas }
+  const dirtyThumbs = new Set();
+  let thumbsQueued = false;
+
+  function markThumb(frame) { dirtyThumbs.add(frame); requestThumbs(); }
+  function markAllThumbs() { doc.frames.forEach((f) => dirtyThumbs.add(f)); requestThumbs(); }
+  function requestThumbs() {
+    if (thumbsQueued) return;
+    thumbsQueued = true;
+    requestAnimationFrame(() => {
+      thumbsQueued = false;
+      for (const f of dirtyThumbs) {
+        const cell = cells.get(f);
+        if (cell) drawFrame(cell.canvas.getContext('2d'), f, { w: cell.canvas.width, h: cell.canvas.height });
+      }
+      dirtyThumbs.clear();
+    });
+  }
+
+  function buildStrip() {
+    strip.innerHTML = '';
+    cells.clear();
+    doc.frames.forEach((f, i) => {
+      const btn = document.createElement('button');
+      btn.className = 'frame-cell';
+      btn.title = `Frame ${i + 1}`;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(88 * DPR);
+      canvas.height = Math.round(50 * DPR);
+      const label = document.createElement('span');
+      label.textContent = i + 1;
+      btn.append(canvas, label);
+      btn.addEventListener('click', () => { stopPlay(); goFrame(f); });
+      strip.appendChild(btn);
+      cells.set(f, { btn, canvas });
+    });
+    stripSignature = doc.frames.map((f) => f.id).join();
+    markAllThumbs();
+    updateFrameUI();
+  }
+
+  function updateFrameUI() {
+    const i = frameIndex();
+    $('#frame-counter').textContent = `${i + 1} / ${doc.frames.length}`;
+    $('#f-del').disabled = doc.frames.length <= 1;
+    cells.forEach((cell, f) => cell.btn.classList.toggle('active', f === doc.frame));
+    // Keep the current frame scrolled into view.
+    const cell = cells.get(doc.frame);
+    if (cell) {
+      const b = cell.btn;
+      if (b.offsetLeft < strip.scrollLeft) strip.scrollLeft = b.offsetLeft - 8;
+      else if (b.offsetLeft + b.offsetWidth > strip.scrollLeft + strip.clientWidth) {
+        strip.scrollLeft = b.offsetLeft + b.offsetWidth - strip.clientWidth + 8;
+      }
+    }
+  }
+
+  function goFrame(frame) {
+    if (!frame || busy()) return;
+    doc.frame = frame;
+    updateFrameUI();
+    onionDirty = true;
+    requestRender();
+    if (!playing) refreshLayersPanel();
+  }
+  function stepFrame(dir) {
+    if (busy()) return;
+    stopPlay();
+    const n = doc.frames.length;
+    goFrame(doc.frames[(frameIndex() + dir + n) % n]);
+  }
+
+  // Take a frame out of the project, along with its drawings (kept for undo).
+  function detachFrame(frame) {
+    const index = doc.frames.indexOf(frame);
+    const saved = [];
+    for (const layer of doc.layers) {
+      const cel = layer.cels.get(frame.id);
+      if (cel) { saved.push([layer, cel]); layer.cels.delete(frame.id); }
+    }
+    doc.frames.splice(index, 1);
+    return saved;
+  }
+  function attachFrame(frame, index, saved) {
+    doc.frames.splice(index, 0, frame);
+    for (const [layer, cel] of saved) layer.cels.set(frame.id, cel);
+  }
+
+  function framesChanged() {
+    buildStrip();
+    goFrame(doc.frame);
+    layersChanged();
+  }
+
+  function insertFrameStep(label, frame, saved) {
+    if (doc.frames.length >= MAX_FRAMES) { toast(`You've reached the limit of ${MAX_FRAMES} frames.`); return; }
+    const prev = doc.frame;
+    const index = frameIndex() + 1;
+    attachFrame(frame, index, saved);
+    doc.frame = frame;
+    let kept = saved;
+    history.push({
+      label,
+      undo() { kept = detachFrame(frame); doc.frame = prev; },
+      redo() { attachFrame(frame, index, kept); doc.frame = frame; },
+    });
+    framesChanged();
+  }
+
+  $('#f-add').addEventListener('click', () => {
+    if (busy()) return;
+    stopPlay();
+    insertFrameStep('New frame', newFrame(), []);
+  });
+
+  $('#f-dup').addEventListener('click', () => {
+    if (busy()) return;
+    stopPlay();
+    const frame = newFrame();
+    const copies = [];
+    for (const layer of doc.layers) {
+      const cel = layer.cels.get(doc.frame.id);
+      if (cel) copies.push([layer, copyCanvas(cel)]);
+    }
+    insertFrameStep('Duplicate frame', frame, copies);
+  });
+
+  $('#f-del').addEventListener('click', () => {
+    if (busy()) return;
+    stopPlay();
+    if (doc.frames.length <= 1) { toast('You need at least one frame.'); return; }
+    const frame = doc.frame;
+    const index = frameIndex();
+    let saved = detachFrame(frame);
+    const neighbour = () => doc.frames[Math.min(index, doc.frames.length - 1)];
+    doc.frame = neighbour();
+    history.push({
+      label: 'Delete frame',
+      undo() { attachFrame(frame, index, saved); doc.frame = frame; },
+      redo() { saved = detachFrame(frame); doc.frame = neighbour(); },
+    });
+    framesChanged();
+    toast(`Deleted frame ${index + 1}. Press Undo to bring it back.`);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Playback
+  // ---------------------------------------------------------------------------
+  let playing = false;
+  let lastTick = 0, elapsed = 0;
+
+  function startPlay() {
+    if (playing || busy()) return;
+    if (doc.frames.length < 2) { toast('Add more frames to play an animation.'); return; }
+    closePanels();
+    playing = true;
+    elapsed = 0;
+    lastTick = performance.now();
+    cursorEl.style.display = 'none';
+    updatePlayButton();
+    refreshOnion();
+    requestAnimationFrame(playTick);
+  }
+  function playTick(t) {
+    if (!playing) return;
+    elapsed = Math.min(elapsed + (t - lastTick), 1000);
+    lastTick = t;
+    const dur = 1000 / doc.fps;
+    if (elapsed >= dur) {
+      const steps = Math.floor(elapsed / dur);
+      elapsed -= steps * dur;
+      goFrame(doc.frames[(frameIndex() + steps) % doc.frames.length]);
+    }
+    requestAnimationFrame(playTick);
+  }
+  function stopPlay() {
+    if (!playing) return;
+    playing = false;
+    updatePlayButton();
+    refreshOnion();
+    refreshLayersPanel();
+  }
+  function togglePlay() { if (playing) stopPlay(); else startPlay(); }
+  function updatePlayButton() {
+    $('#play-label').textContent = playing ? 'Stop' : 'Play';
+    $('#play-icon').innerHTML = playing ? '<rect x="6" y="6" width="12" height="12" rx="1.5"/>' : '<path d="M7 4.5v15l12-7.5z"/>';
+    $('#btn-play').classList.toggle('active', playing);
+  }
+  $('#btn-play').addEventListener('click', togglePlay);
+
+  $('#fps').addEventListener('input', (e) => {
+    doc.fps = +e.target.value;
+    $('#fps-out').textContent = doc.fps + ' fps';
+    saveSettings();
+  });
+
+  // Onion skin controls
+  $('#btn-onion').addEventListener('click', () => {
+    state.onion.enabled = !state.onion.enabled;
+    saveSettings();
+    syncUI();
+    refreshOnion();
+  });
+  function onionInput(id, key) {
+    $('#' + id).addEventListener('input', (e) => {
+      state.onion[key] = +e.target.value;
+      if (key !== 'opacity' || state.onion.enabled) state.onion.enabled = true;
+      saveSettings();
+      syncUI();
+      refreshOnion();
+    });
+  }
+  onionInput('o-prev', 'prev');
+  onionInput('o-next', 'next');
+  onionInput('o-opacity', 'opacity');
 
   // ---------------------------------------------------------------------------
   // Layers panel
@@ -426,9 +766,10 @@
     blendSelect.appendChild(o);
   });
 
-  // Called whenever layers change: redraw the canvas and update the panel.
+  // Called whenever layers change: redraw the canvas, thumbnails and panel.
   function layersChanged() {
-    requestRender();
+    markAllThumbs();
+    refreshOnion();
     refreshLayersPanel();
   }
 
@@ -439,7 +780,6 @@
   }
 
   function buildLayerList() {
-    const dpr = Math.max(1, window.devicePixelRatio || 1);
     layerList.innerHTML = '';
     // Show the top layer first, like most art apps.
     for (let i = doc.layers.length - 1; i >= 0; i--) {
@@ -449,16 +789,23 @@
 
       const thumb = document.createElement('canvas');
       thumb.className = 'thumb';
-      thumb.width = 64 * dpr; thumb.height = 36 * dpr;
-      thumb.getContext('2d').drawImage(layer.canvas, 0, 0, thumb.width, thumb.height);
+      thumb.width = Math.round(64 * DPR); thumb.height = Math.round(36 * DPR);
+      const cel = celOf(layer, doc.frame);
+      if (cel) thumb.getContext('2d').drawImage(cel, 0, 0, thumb.width, thumb.height);
 
       const name = document.createElement('span');
       name.className = 'layer-name';
       name.textContent = layer.name;
       const extra = [];
+      if (layer.static) extra.push('All frames');
       if (layer.blend !== 'source-over') extra.push(BLEND_MODES.find((m) => m[0] === layer.blend)[1].split(' ')[0]);
       if (layer.opacity < 1) extra.push(Math.round(layer.opacity * 100) + '%');
-      if (extra.length) name.innerHTML += ` <span class="layer-badge">${extra.join(' · ')}</span>`;
+      if (extra.length) {
+        const badge = document.createElement('span');
+        badge.className = 'layer-badge';
+        badge.textContent = ' ' + extra.join(' · ');
+        name.appendChild(badge);
+      }
 
       const eye = document.createElement('button');
       eye.className = 'icon-toggle';
@@ -477,18 +824,18 @@
       lock.addEventListener('click', (ev) => {
         ev.stopPropagation();
         layer.locked = !layer.locked;
-        layersChanged();
+        refreshLayersPanel();
       });
 
       li.append(thumb, name, eye, lock);
       li.addEventListener('click', () => {
-        if (doc.active !== layer) { doc.active = layer; layersChanged(); }
+        if (doc.active !== layer) { doc.active = layer; refreshLayersPanel(); }
       });
       name.addEventListener('dblclick', () => startRename(layer));
       layerList.appendChild(li);
     }
 
-    const idx = indexOf(doc.active);
+    const idx = layerIndex(doc.active);
     $('#layer-count').textContent = `${doc.layers.length} of ${MAX_LAYERS}`;
     $('#l-add').disabled = doc.layers.length >= MAX_LAYERS;
     $('#l-dup').disabled = doc.layers.length >= MAX_LAYERS;
@@ -498,6 +845,7 @@
     $('#l-down').disabled = idx <= 0;
     $('#l-opacity').value = Math.round(doc.active.opacity * 100);
     $('#l-opacity-out').textContent = Math.round(doc.active.opacity * 100) + '%';
+    $('#l-static').checked = doc.active.static;
     blendSelect.value = doc.active.blend;
   }
 
@@ -516,7 +864,7 @@
 
   $('#l-add').addEventListener('click', () => {
     if (busy() || doc.layers.length >= MAX_LAYERS) return;
-    addLayerStep('New layer', newLayer(), indexOf(doc.active) + 1);
+    addLayerStep('New layer', newLayer(), layerIndex(doc.active) + 1);
   });
 
   $('#l-dup').addEventListener('click', () => {
@@ -524,11 +872,12 @@
     const src = doc.active;
     const copy = newLayer(src.name + ' copy');
     layerCounter--; // a copy doesn't use up a "Layer N" number
-    copy.ctx.drawImage(src.canvas, 0, 0);
+    src.cels.forEach((cel, key) => copy.cels.set(key, copyCanvas(cel)));
+    copy.static = src.static;
     copy.opacity = src.opacity;
     copy.blend = src.blend;
     copy.visible = src.visible;
-    addLayerStep('Duplicate layer', copy, indexOf(src) + 1);
+    addLayerStep('Duplicate layer', copy, layerIndex(src) + 1);
   });
 
   $('#l-del').addEventListener('click', () => {
@@ -544,31 +893,40 @@
       redo() { takeLayer(layer); doc.active = below(); },
     });
     layersChanged();
-    toast(`Deleted "${layer.name}". Press Undo to bring it back.`);
+    toast(`Deleted "${layer.name}" (on all frames). Press Undo to bring it back.`);
   });
 
   $('#l-merge').addEventListener('click', () => {
     if (busy()) return;
     const upper = doc.active;
-    const index = indexOf(upper);
+    const index = layerIndex(upper);
     if (index <= 0) return;
     const lower = doc.layers[index - 1];
     if (lower.locked || upper.locked) { toast('Unlock both layers before merging them.'); return; }
-    const before = lower.ctx.getImageData(0, 0, DOC_W, DOC_H);
-    if (upper.visible) {
-      lower.ctx.save();
-      lower.ctx.globalAlpha = upper.opacity;
-      lower.ctx.globalCompositeOperation = upper.blend;
-      lower.ctx.drawImage(upper.canvas, 0, 0);
-      lower.ctx.restore();
+    if (lower.static !== upper.static) {
+      toast('Both layers need the same "Same on every frame" setting to merge.');
+      return;
     }
-    const after = lower.ctx.getImageData(0, 0, DOC_W, DOC_H);
+    // Merge on every frame. The lower layer gets new drawings; the old ones are kept for undo.
+    const beforeCels = new Map(lower.cels);
+    const afterCels = new Map(lower.cels);
+    if (upper.visible) {
+      upper.cels.forEach((cel, key) => {
+        const merged = copyCanvas(lower.cels.get(key));
+        const ctx = merged.getContext('2d');
+        ctx.globalAlpha = upper.opacity;
+        ctx.globalCompositeOperation = upper.blend;
+        ctx.drawImage(cel, 0, 0);
+        afterCels.set(key, merged);
+      });
+    }
+    lower.cels = afterCels;
     takeLayer(upper);
     doc.active = lower;
     history.push({
       label: 'Merge down',
-      undo() { lower.ctx.putImageData(before, 0, 0); putLayer(upper, index); doc.active = upper; },
-      redo() { lower.ctx.putImageData(after, 0, 0); takeLayer(upper); doc.active = lower; },
+      undo() { lower.cels = beforeCels; putLayer(upper, index); doc.active = upper; },
+      redo() { lower.cels = afterCels; takeLayer(upper); doc.active = lower; },
     });
     layersChanged();
   });
@@ -576,11 +934,11 @@
   function moveLayer(dir) {
     if (busy()) return;
     const layer = doc.active;
-    const from = indexOf(layer), to = from + dir;
+    const from = layerIndex(layer), to = from + dir;
     if (to < 0 || to >= doc.layers.length) return;
     // Swaps the layer between its two positions (used for move, undo and redo).
     const swap = () => {
-      const i = indexOf(layer), j = i === from ? to : from;
+      const i = layerIndex(layer), j = i === from ? to : from;
       [doc.layers[i], doc.layers[j]] = [doc.layers[j], doc.layers[i]];
       doc.active = layer;
     };
@@ -625,6 +983,36 @@
   blendSelect.addEventListener('change', () => {
     const layer = doc.active;
     setLayerProp(layer, 'blend', layer.blend, blendSelect.value, 'Blend mode');
+  });
+
+  // "Same on every frame": ON uses this frame's drawing for all frames.
+  // OFF puts that shared drawing onto this frame; other frames go back to their own drawings.
+  $('#l-static').addEventListener('change', (e) => {
+    const layer = doc.active;
+    const on = e.target.checked;
+    if (busy() || layer.static === on) return;
+    stopPlay();
+    const beforeCels = new Map(layer.cels);
+    const afterCels = new Map(layer.cels);
+    const frameNo = frameIndex() + 1;
+    if (on) {
+      afterCels.set('static', copyCanvas(layer.cels.get(doc.frame.id)));
+    } else {
+      const shared = afterCels.get('static');
+      afterCels.delete('static');
+      if (shared) afterCels.set(doc.frame.id, shared);
+    }
+    const apply = (isStatic, cels) => { layer.static = isStatic; layer.cels = cels; doc.active = layer; };
+    apply(on, afterCels);
+    history.push({
+      label: 'Same on every frame',
+      undo() { apply(!on, beforeCels); },
+      redo() { apply(on, afterCels); },
+    });
+    layersChanged();
+    toast(on
+      ? `"${layer.name}" now shows the same drawing on every frame.`
+      : `"${layer.name}" now changes from frame to frame. Its drawing was kept on frame ${frameNo}.`);
   });
 
   function startRename(layer) {
@@ -688,11 +1076,19 @@
     if (panel.id === 'panel-brush') drawBrushPreviews();
     if (panel.id === 'panel-color') picker.markPrevious();
     const r = anchor.getBoundingClientRect();
-    const tb = $('.toolbar').getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
     panel.style.left = left + 'px';
-    panel.style.top = (tb.bottom + 6) + 'px';
-    panel.style.maxHeight = (window.innerHeight - tb.bottom - 14) + 'px';
+    if (anchor.closest('.timeline')) {
+      // Panels for the timeline open upward.
+      panel.style.top = '';
+      panel.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+      panel.style.maxHeight = (r.top - 14) + 'px';
+    } else {
+      const tb = $('.toolbar').getBoundingClientRect();
+      panel.style.bottom = '';
+      panel.style.top = (tb.bottom + 6) + 'px';
+      panel.style.maxHeight = (window.innerHeight - tb.bottom - 14) + 'px';
+    }
   }
   $$('[data-panel]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -816,6 +1212,16 @@
     $('#x-smoothing-out').textContent = state.blend.smoothing + '%';
     $('#x-pressure').checked = state.pressure;
 
+    $('#fps').value = doc.fps;
+    $('#fps-out').textContent = doc.fps + ' fps';
+    $('#btn-onion').classList.toggle('active', state.onion.enabled);
+    $('#o-prev').value = state.onion.prev;
+    $('#o-prev-out').textContent = state.onion.prev;
+    $('#o-next').value = state.onion.next;
+    $('#o-next-out').textContent = state.onion.next;
+    $('#o-opacity').value = state.onion.opacity;
+    $('#o-opacity-out').textContent = state.onion.opacity + '%';
+
     $('#color-swatch').style.background = state.color;
     display.classList.toggle('picking', tool === 'eyedropper');
   }
@@ -830,10 +1236,17 @@
     if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
     if (mod && k === 'y') { e.preventDefault(); redo(); return; }
     if (mod || e.altKey) return;
-    if (k === 'b') setTool('brush');
+    if (k === ' ') {
+      e.preventDefault();
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      togglePlay();
+    } else if (k === ',' || k === 'arrowleft') { e.preventDefault(); stepFrame(-1); }
+    else if (k === '.' || k === 'arrowright') { e.preventDefault(); stepFrame(1); }
+    else if (k === 'b') setTool('brush');
     else if (k === 'e') setTool('eraser');
     else if (k === 's') setTool('blend');
     else if (k === 'i') setTool('eyedropper');
+    else if (k === 'o') $('#btn-onion').click();
     else if (k === 'escape') closePanels();
     else if (k === '[' || k === ']') {
       const s = currentSettings();
@@ -844,12 +1257,16 @@
       syncUI();
     }
   });
+  // Space on a focused button shouldn't also "click" it.
+  window.addEventListener('keyup', (e) => { if (e.key === ' ') e.preventDefault(); });
 
   // ---------------------------------------------------------------------------
   // Start
   // ---------------------------------------------------------------------------
   syncUI();
   fit();
+  buildStrip();
   history.onChange();
+  refreshLayersPanel();
   requestRender();
 })();
