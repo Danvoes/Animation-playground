@@ -177,6 +177,8 @@
     exportSize: ['360', '720', '1080'].includes(saved.exportSize) ? saved.exportSize : '720',
     exportLoops: [1, 2, 3].includes(saved.exportLoops) ? saved.exportLoops : 1,
     exportSound: saved.exportSound !== false,
+    showTimes: saved.showTimes !== false,
+    timelapse: saved.timelapse !== false,
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
@@ -191,6 +193,7 @@
       quickShape: state.quickShape, fillGap: state.fillGap, playMode: state.playMode,
       selectMode: state.selectMode, tfUniform: state.tfUniform,
       exportSize: state.exportSize, exportLoops: state.exportLoops, exportSound: state.exportSound,
+      showTimes: state.showTimes, timelapse: state.timelapse,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -215,6 +218,7 @@
     $('#btn-undo').disabled = !history.canUndo;
     $('#btn-redo').disabled = !history.canRedo;
     scheduleAutosave();
+    tlSchedule();
   };
 
   const busy = () => !!(stroke || blendStroke);
@@ -1579,9 +1583,17 @@
     updateFrameUI();
   }
 
+  // Seconds as text: "0.25 s", or "1:05.50" past a minute.
+  function fmtSec(t, short) {
+    if (t < 60) return t.toFixed(2) + (short ? 's' : ' s');
+    const m = Math.floor(t / 60), r = t - m * 60;
+    return `${m}:${r < 10 ? '0' : ''}${r.toFixed(2)}`;
+  }
   function updateFrameUI() {
     const i = frameIndex();
-    $('#frame-counter').textContent = `${i + 1} / ${doc.frames.length}`;
+    const tl = buildTimeline();
+    $('#fc-frame').textContent = `${i + 1} / ${doc.frames.length}`;
+    $('#fc-time').textContent = `${fmtSec(tl.starts[i] || 0)} / ${fmtSec(tl.total)}`;
     $('#f-del').disabled = doc.frames.length <= 1;
     cells.forEach((cell, f) => {
       cell.btn.classList.toggle('active', f === doc.frame);
@@ -1595,7 +1607,14 @@
         h.textContent = ` ×${hold}`;
         label.append(h);
       }
-      cell.btn.title = `Frame ${doc.frames.indexOf(f) + 1}` + (hold > 1 ? ` (held for ${hold} beats)` : '');
+      const fi = doc.frames.indexOf(f);
+      if (state.showTimes) {
+        const tspan = document.createElement('span');
+        tspan.className = 'ftime';
+        tspan.textContent = fmtSec(tl.starts[fi], true);
+        label.append(tspan);
+      }
+      cell.btn.title = `Frame ${fi + 1}, starts at ${fmtSec(tl.starts[fi])}` + (hold > 1 ? ` (held for ${hold} beats)` : '');
     });
     if (!$('#panel-frame').hidden) refreshFramePanel();
     // Keep the current frame scrolled into view.
@@ -1741,6 +1760,8 @@
     const i = frameIndex();
     const hold = doc.frame.hold || 1;
     $('#pf-title').textContent = `Frame ${i + 1}`;
+    const tl = buildTimeline();
+    $('#pf-time').textContent = `Starts at ${fmtSec(tl.starts[i])} and stays on screen for ${fmtSec(hold / doc.fps)}.`;
     $('#pf-hold').textContent = hold;
     $('#pf-hold-unit').textContent = hold === 1 ? 'beat' : 'beats';
     $('#pf-hold-minus').disabled = hold <= 1;
@@ -1965,6 +1986,7 @@
     doc.fps = +e.target.value;
     $('#fps-out').textContent = doc.fps + ' fps';
     saveSettings();
+    updateFrameUI(); // the times on the frames change with the speed
   });
 
   // Onion skin controls
@@ -1986,6 +2008,21 @@
   onionInput('o-prev', 'prev');
   onionInput('o-next', 'next');
   onionInput('o-opacity', 'opacity');
+  $('#o-times').addEventListener('change', (e) => {
+    state.showTimes = e.target.checked;
+    saveSettings();
+    updateFrameUI();
+  });
+  // Tap the time to jump to a moment in the animation.
+  $('#frame-counter').addEventListener('click', () => {
+    stopPlay();
+    const tl = buildTimeline();
+    const answer = prompt(`Go to which time? (in seconds, from 0 to ${tl.total.toFixed(2)})`, (tl.starts[frameIndex()] || 0).toFixed(2));
+    if (answer == null) return;
+    const t = parseFloat(String(answer).replace(',', '.'));
+    if (!Number.isFinite(t)) { toast('Please type a number of seconds, like 1.5'); return; }
+    goFrame(doc.frames[frameAtTime(tl, clamp(t, 0, Math.max(0, tl.total - 1e-6)))]);
+  });
   $$('#play-modes button').forEach((b) => b.addEventListener('click', () => {
     state.playMode = b.dataset.mode;
     scheduleAutosave();
@@ -2414,7 +2451,7 @@
     if (panel.id === 'panel-color') picker.markPrevious();
     if (panel.id === 'panel-frame') refreshFramePanel();
     if (panel.id === 'panel-audio') buildAudioList();
-    if (panel.id === 'panel-export') refreshExportPanel();
+    if (panel.id === 'panel-export') { refreshExportPanel(); refreshTimelapseInfo(); }
     if (panel.id === 'panel-menu') $('#p-name').value = project.name === 'Untitled' ? '' : project.name;
     const r = anchor.getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
@@ -2590,6 +2627,8 @@
     $('#o-prev-out').textContent = state.onion.prev;
     $('#o-next').value = state.onion.next;
     $('#o-next-out').textContent = state.onion.next;
+    $('#o-times').checked = state.showTimes;
+    $('#tl-on').checked = state.timelapse;
     $('#o-opacity').value = state.onion.opacity;
     $('#o-opacity-out').textContent = state.onion.opacity + '%';
 
@@ -2656,7 +2695,7 @@
 
   function updateTitle() {
     $('#title-name').textContent = project.name;
-    document.title = `${project.name} – Animation Playground`;
+    document.title = `${project.name} – Playground`;
   }
   function setSaveStatus(kind) {
     const el = $('#save-status');
@@ -2768,7 +2807,7 @@
   async function loadProject(meta, fetchCel, fetchAudio) {
     if (!meta || !Array.isArray(meta.frames) || !Array.isArray(meta.layers) ||
         !meta.frames.length || !meta.layers.length) {
-      throw new Error('This file doesn\'t look like an Animation Playground project.');
+      throw new Error('This file doesn\'t look like a Playground project.');
     }
     // Build everything first, so a broken file can't leave a half-loaded project.
     const usedF = new Set(), usedL = new Set();
@@ -2892,6 +2931,7 @@
     restoring = false;
     unsaved = false;
     setSaveStatus('saved');
+    try { tlCount = (await ProjectStorage.tlKeys()).length; } catch (_) { tlCount = 0; }
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   }
 
@@ -2966,11 +3006,12 @@
       });
       if (!meta.name) project.name = file.name.replace(/\.(anim|json)$/i, '') || 'Untitled';
       updateTitle();
+      tlReset();
       autosaveNow();
       toast(`Opened "${project.name}".`);
     } catch (err) {
       console.warn(err);
-      toast('That file couldn\'t be opened. Is it an Animation Playground project (.anim)?');
+      toast('That file couldn\'t be opened. Is it a Playground project (.anim)?');
     }
   });
   function autosaveNow() {
@@ -2986,7 +3027,7 @@
     loadProject({
       name: 'Untitled', fps: doc.fps, playMode: state.playMode, layerCounter: 1,
       frames: [{ id: 'f1', hold: 1 }], layers: [{ id: 'l1', name: 'Layer 1', cels: [] }],
-    }, async () => null).then(() => { autosaveNow(); toast('New project started.'); });
+    }, async () => null).then(() => { tlReset(); autosaveNow(); toast('New project started.'); });
   }
 
   $('#p-save').addEventListener('click', saveToFile);
@@ -3530,12 +3571,221 @@
   });
 
   // ---------------------------------------------------------------------------
+  // Time-lapse: a small snapshot after every change, to replay how it was made
+  // ---------------------------------------------------------------------------
+  const TL_W = 960, TL_H = 540, TL_MAX = 2000;
+  let tlCount = 0, tlTimer = null, tlBusy = false, tlView = null;
+  const tlMemory = []; // used if this browser can't store things
+  const tlCanvas = makeCanvas(TL_W, TL_H);
+
+  function tlSchedule() {
+    if (!state.timelapse || restoring) return;
+    clearTimeout(tlTimer);
+    tlTimer = setTimeout(tlCapture, 350);
+  }
+  async function snapshotBlob() {
+    drawFrame(tlCanvas.getContext('2d'), doc.frame, { w: TL_W, h: TL_H });
+    if (window.OffscreenCanvas) {
+      try {
+        const oc = new OffscreenCanvas(TL_W, TL_H);
+        oc.getContext('2d').drawImage(tlCanvas, 0, 0);
+        return await oc.convertToBlob({ type: 'image/jpeg', quality: 0.75 });
+      } catch (_) { /* use the normal way */ }
+    }
+    return new Promise((res, rej) => tlCanvas.toBlob((b) => (b ? res(b) : rej(new Error('encode'))), 'image/jpeg', 0.75));
+  }
+  async function tlCapture() {
+    if (busy() || transform || tlBusy) { tlSchedule(); return; }
+    tlBusy = true;
+    try {
+      const blob = await snapshotBlob();
+      if (storageOK) {
+        await ProjectStorage.tlAdd(blob);
+        tlCount++;
+        // Very long sessions: keep every other snapshot so it doesn't grow forever.
+        if (tlCount > TL_MAX) {
+          const keys = await ProjectStorage.tlKeys();
+          await ProjectStorage.tlDelete(keys.filter((_, i) => i % 2 === 1 && i < keys.length - 1));
+          tlCount = (await ProjectStorage.tlKeys()).length;
+        }
+      } else {
+        tlMemory.push(blob);
+        if (tlMemory.length > 600) for (let i = tlMemory.length - 2; i > 0; i -= 2) tlMemory.splice(i, 1);
+        tlCount = tlMemory.length;
+      }
+    } catch (err) {
+      console.warn('Time-lapse snapshot failed', err);
+    } finally {
+      tlBusy = false;
+    }
+  }
+  async function tlReset() {
+    clearTimeout(tlTimer);
+    tlMemory.length = 0;
+    tlCount = 0;
+    if (storageOK) { try { await ProjectStorage.tlClear(); } catch (_) { /* ignore */ } }
+  }
+  async function tlList() {
+    return storageOK ? ProjectStorage.tlKeys() : tlMemory.map((_, i) => i);
+  }
+  async function tlImage(keys, i) {
+    const blob = storageOK ? await ProjectStorage.tlGet(keys[i]) : tlMemory[keys[i]];
+    return blob ? ProjectStorage.toImage(blob) : null;
+  }
+  function refreshTimelapseInfo() {
+    $('#tl-info').textContent = state.timelapse
+      ? (tlCount ? `${tlCount} step${tlCount === 1 ? '' : 's'} recorded so far. Every change you make is added.`
+        : 'Nothing recorded yet. Every change you make will be added.')
+      : 'Recording is off.' + (tlCount ? ` ${tlCount} step${tlCount === 1 ? ' was' : 's were'} recorded earlier.` : '');
+    $('#tl-watch').disabled = !tlCount;
+    $('#tl-export-btn').disabled = !tlCount;
+  }
+  $('#tl-on').addEventListener('change', (e) => {
+    state.timelapse = e.target.checked;
+    saveSettings();
+    refreshTimelapseInfo();
+  });
+
+  // ---- The replay viewer ----
+  const tlCtx = $('#tl-canvas').getContext('2d');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function openTimelapse() {
+    const keys = await tlList();
+    if (!keys.length) { toast('Nothing recorded yet. Draw something first!'); return; }
+    closePanels();
+    stopPlay();
+    tlView = { keys, i: 0, playing: true, interval: Math.max(40, Math.min(250, 15000 / keys.length)) };
+    $('#tl-seek').max = keys.length - 1;
+    $('#tl-overlay').hidden = false;
+    tlLoop(tlView);
+  }
+  async function tlShow(v, i) {
+    const img = await tlImage(v.keys, i);
+    if (v !== tlView) { if (img && img.close) img.close(); return; }
+    if (img) {
+      tlCtx.drawImage(img, 0, 0, TL_W, TL_H);
+      if (img.close) img.close();
+    }
+    v.i = i;
+    $('#tl-seek').value = i;
+    $('#tl-pos').textContent = `${i + 1} / ${v.keys.length}`;
+  }
+  async function tlLoop(v) {
+    $('#tl-play').textContent = 'Pause';
+    while (v === tlView && v.playing) {
+      const t0 = performance.now();
+      await tlShow(v, v.i);
+      if (v.i >= v.keys.length - 1) { v.playing = false; break; }
+      v.i++;
+      await sleep(Math.max(0, v.interval - (performance.now() - t0)));
+    }
+    if (v === tlView) $('#tl-play').textContent = 'Play';
+  }
+  function tlTogglePlay() {
+    const v = tlView;
+    if (!v) return;
+    if (v.playing) { v.playing = false; return; }
+    if (v.i >= v.keys.length - 1) v.i = 0;
+    v.playing = true;
+    tlLoop(v);
+  }
+  function closeTimelapse() {
+    tlView = null;
+    $('#tl-overlay').hidden = true;
+  }
+  $('#tl-watch').addEventListener('click', openTimelapse);
+  $('#tl-play').addEventListener('click', tlTogglePlay);
+  $('#tl-close').addEventListener('click', closeTimelapse);
+  $('#tl-seek').addEventListener('input', (e) => {
+    const v = tlView;
+    if (!v) return;
+    v.playing = false;
+    tlShow(v, +e.target.value);
+  });
+  $('#tl-overlay').addEventListener('pointerdown', (e) => { if (e.target.id === 'tl-overlay') closeTimelapse(); });
+
+  // ---- Export the replay as a video ----
+  async function exportTimelapse() {
+    if (exporting) return;
+    const keys = await tlList();
+    if (!keys.length) { toast('Nothing recorded yet. Draw something first!'); return; }
+    const type = pickVideoType(false);
+    if (!type) { toast('This browser can\'t make videos. Try a recent Chrome, Edge or Safari.'); return; }
+    closeTimelapse();
+    closePanels();
+    stopPlay();
+    const n = keys.length;
+    const dur = clamp(n / 12, 3, 30); // a quick replay: between 3 and 30 seconds
+    const hold = 1.5;                  // then stay on the finished picture a moment
+    const total = dur + hold;
+    const ec = makeCanvas(TL_W, TL_H);
+    const ectx = ec.getContext('2d');
+    ectx.fillStyle = '#fff';
+    ectx.fillRect(0, 0, TL_W, TL_H);
+    const preview = $('#ex-preview');
+    preview.innerHTML = '';
+    preview.appendChild(ec);
+    const stream = ec.captureStream();
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 5e6 });
+    } catch (err) {
+      stream.getTracks().forEach((t) => t.stop());
+      toast('The video couldn\'t be started in this browser.');
+      return;
+    }
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const finished = new Promise((resolve) => { rec.onstop = resolve; });
+    const job = exporting = { rec, cancelled: false, nodes: [] };
+    $('#ex-title').textContent = 'Making your time-lapse…';
+    $('#export-overlay').hidden = false;
+    rec.start(250);
+    const start = performance.now();
+    let shown = -1, current = null;
+    while (!job.cancelled) {
+      const t = (performance.now() - start) / 1000;
+      if (t >= total) break;
+      const idx = Math.min(n - 1, Math.floor((t / dur) * n));
+      if (idx !== shown) {
+        shown = idx;
+        const img = await tlImage(keys, idx);
+        if (img) { if (current && current.close) current.close(); current = img; }
+      }
+      if (current) ectx.drawImage(current, 0, 0, TL_W, TL_H); // redraw so the video has steady frames
+      $('#ex-bar').style.width = Math.min(100, (t / total) * 100) + '%';
+      $('#ex-status').textContent = `${fmtDuration(Math.min(t, total))} of ${fmtDuration(total)}`;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    if (rec.state !== 'inactive') rec.stop();
+    await finished;
+    if (current && current.close) current.close();
+    stream.getTracks().forEach((t) => t.stop());
+    $('#export-overlay').hidden = true;
+    $('#ex-title').textContent = 'Making your video…';
+    preview.innerHTML = '';
+    exporting = null;
+    if (job.cancelled) { toast('Export cancelled.'); return; }
+    const blob = new Blob(chunks, { type: type.split(';')[0] });
+    const fileName = `${safeFileName(project.name)} - time-lapse.${type.includes('mp4') ? 'mp4' : 'webm'}`;
+    ProjectStorage.download(blob, fileName);
+    toast(`Time-lapse saved: "${fileName}" (${(blob.size / 1048576).toFixed(1)} MB) in your Downloads folder.`, 5000);
+  }
+  $('#tl-export').addEventListener('click', exportTimelapse);
+  $('#tl-export-btn').addEventListener('click', exportTimelapse);
+
+  // ---------------------------------------------------------------------------
   // Keyboard shortcuts
   // ---------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
     if (exporting) {
       e.preventDefault();
       if (e.key === 'Escape') cancelExport();
+      return;
+    }
+    if (tlView) {
+      if (e.key === 'Escape') { e.preventDefault(); closeTimelapse(); }
+      else if (e.key === ' ') { e.preventDefault(); tlTogglePlay(); }
       return;
     }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key.toLowerCase() === 's' || e.key.toLowerCase() === 'o')) {

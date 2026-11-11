@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <title>Animation Playground</title>
+  <title>Playground</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -13,6 +13,7 @@
       <button class="tb" id="btn-menu" data-panel="panel-menu" title="Menu: view, touch settings, gestures, clear layer">
         <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
+      <div class="brand" aria-label="Playground"><span>P</span><span>l</span><span>a</span><span>y</span><span>g</span><span>r</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
       <button class="tb" id="btn-export" data-panel="panel-export" title="Export a video of your animation">
         <svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>
       </button>
@@ -120,7 +121,10 @@
     <div class="frame-strip" id="frame-strip"></div>
 
     <div class="tl-group">
-      <span class="frame-counter" id="frame-counter">1 / 1</span>
+      <button class="frame-counter" id="frame-counter" title="Where you are in the animation. Tap to jump to a time.">
+        <span id="fc-frame">1 / 1</span>
+        <span id="fc-time">0.00 s / 0.00 s</span>
+      </button>
       <button class="btn" id="f-add" title="Add an empty frame after this one">
         <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M12 9v6M9 12h6"/></svg>
         <span>New frame</span>
@@ -306,14 +310,38 @@
     <label class="check"><input type="checkbox" id="ex-sound"> Include sound</label>
     <p class="hint" id="ex-info"></p>
     <button class="mini primary wide" id="ex-start" style="margin-top:12px">Export video</button>
+    <h2 class="gap">Time-lapse</h2>
+    <p class="hint" id="tl-info" style="margin-top:0"></p>
+    <div class="mini-grid" style="margin-top:8px">
+      <button class="mini" id="tl-watch" title="Replay how your artwork was made">Watch replay</button>
+      <button class="mini" id="tl-export-btn" title="Save the replay as a video">Export replay video</button>
+    </div>
+    <label class="check"><input type="checkbox" id="tl-on"> Record time-lapse</label>
     <h2 class="gap">Picture</h2>
     <button class="mini wide" id="ex-png" title="Save the frame you're on as a PNG picture">Save this frame as a picture (PNG)</button>
+  </div>
+
+  <!-- Time-lapse replay -->
+  <div id="tl-overlay" hidden>
+    <div class="tl-box">
+      <div class="tl-head">
+        <h2>Time-lapse replay</h2>
+        <button class="icon-toggle" id="tl-close" title="Close (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <canvas id="tl-canvas" width="960" height="540"></canvas>
+      <div class="tl-controls">
+        <button class="mini" id="tl-play">Pause</button>
+        <input type="range" id="tl-seek" min="0" max="0" value="0" aria-label="Replay position">
+        <span id="tl-pos">1 / 1</span>
+      </div>
+      <button class="mini primary wide" id="tl-export">Export replay video</button>
+    </div>
   </div>
 
   <!-- While a video is being made -->
   <div id="export-overlay" hidden>
     <div class="export-box">
-      <h2>Making your video…</h2>
+      <h2 id="ex-title">Making your video…</h2>
       <div class="export-preview" id="ex-preview"></div>
       <div class="progress"><div class="progress-bar" id="ex-bar"></div></div>
       <p class="hint" id="ex-status"></p>
@@ -324,6 +352,7 @@
 
   <!-- ===== Pop-out panel: menu ===== -->
   <div class="panel" id="panel-menu" hidden>
+    <div class="brand brand-menu" aria-hidden="true"><span>P</span><span>l</span><span>a</span><span>y</span><span>g</span><span>r</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
     <h2>Project</h2>
     <input type="text" class="text-input" id="p-name" maxlength="60" placeholder="Untitled" aria-label="Project name">
     <div class="mini-grid three">
@@ -385,6 +414,7 @@
       <button data-mode="pingpong" title="Play forward, then backward, and repeat">Ping-pong</button>
       <button data-mode="once" title="Play once and stop on the last frame">Once</button>
     </div>
+    <label class="check"><input type="checkbox" id="o-times"> Show times on frames</label>
     <h2 class="gap">Onion skin</h2>
     <div class="field">
       <label for="o-prev">Before</label>
@@ -418,6 +448,7 @@
       <span id="pf-hold-unit">beat</span>
     </div>
     <p class="hint">How long this frame stays on screen when playing. 1 beat = one frame at the current speed.</p>
+    <p class="hint" id="pf-time"></p>
     <div class="mini-grid" style="margin-top:12px">
       <button class="mini" id="pf-left">◀ Move earlier</button>
       <button class="mini" id="pf-right">Move later ▶</button>

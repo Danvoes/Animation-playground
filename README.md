@@ -1,4 +1,4 @@
-# Animation Playground
+# Playground
 
 A web app for drawing and making frame-by-frame animations.
 It runs entirely in your web browser. There is nothing to install.
@@ -49,6 +49,25 @@ Tap **Sound** in the timeline:
 Sound plays with the animation in **Loop** and **Once** modes, perfectly in step (in Loop it starts
 again each time round). The frame thumbnails show a small waveform, so you can see where words or
 beats land. Sounds are saved with your project.
+
+## Timing
+
+- Every frame in the strip shows the **time it starts** (for example `0.50s`), based on the speed
+  and any held frames. Turn this off under **Options → Show times on frames**.
+- Next to the frames you can see **where you are**: `4 / 12` and `1.00 s / 3.00 s`.
+  **Tap it to jump to a time** (type seconds, like `1.5`).
+- Tap the selected frame to see exactly when it starts and how long it stays on screen.
+
+## Time-lapse
+
+Playground quietly records a small snapshot every time you change something. Open **Export**:
+
+- **Watch replay:** see how your artwork was made (play/pause, or drag the slider).
+- **Export replay video:** save the replay as a video (3–30 seconds, ending on the finished picture).
+- **Record time-lapse:** turn recording on or off.
+
+The time-lapse is kept with your project in this browser. Starting a new project or opening a file
+starts a fresh time-lapse (it isn't included in `.anim` files).
 
 ## Exporting a video
 

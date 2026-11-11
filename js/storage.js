@@ -14,7 +14,7 @@
   'use strict';
 
   const DB_NAME = 'animation-playground';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2; // 2 added the time-lapse store
   let dbPromise = null;
 
   function openDB() {
@@ -27,6 +27,7 @@
         const db = req.result;
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
         if (!db.objectStoreNames.contains('cels')) db.createObjectStore('cels');
+        if (!db.objectStoreNames.contains('timelapse')) db.createObjectStore('timelapse', { autoIncrement: true });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error);
@@ -76,6 +77,32 @@
     await finished(tx);
   }
 
+  // ---- Time-lapse: one small JPEG picture per change, in order ----
+  async function tlAdd(blob) {
+    const db = await openDB();
+    const tx = db.transaction('timelapse', 'readwrite');
+    tx.objectStore('timelapse').add(blob);
+    await finished(tx);
+  }
+  async function tlKeys() {
+    const db = await openDB();
+    return done(db.transaction('timelapse', 'readonly').objectStore('timelapse').getAllKeys());
+  }
+  const tlGet = (key) => get('timelapse', key);
+  async function tlDelete(keys) {
+    const db = await openDB();
+    const tx = db.transaction('timelapse', 'readwrite');
+    const st = tx.objectStore('timelapse');
+    for (const k of keys) st.delete(k);
+    await finished(tx);
+  }
+  async function tlClear() {
+    const db = await openDB();
+    const tx = db.transaction('timelapse', 'readwrite');
+    tx.objectStore('timelapse').clear();
+    await finished(tx);
+  }
+
   // ---- Picture helpers ----
   const canvasToBlob = (canvas) => new Promise((resolve, reject) => {
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Could not encode picture'))), 'image/png');
@@ -111,7 +138,7 @@
       if (!handle) {
         handle = await window.showSaveFilePicker({
           suggestedName,
-          types: [{ description: 'Animation project', accept: { 'application/json': ['.anim'] } }],
+          types: [{ description: 'Playground project', accept: { 'application/json': ['.anim'] } }],
         });
       }
       const w = await handle.createWritable();
@@ -135,6 +162,7 @@
 
   window.ProjectStorage = {
     get, saveProject, clearProject, openDB,
+    tlAdd, tlKeys, tlGet, tlDelete, tlClear,
     canvasToBlob, blobToDataURL, toImage, writeFile, download,
   };
 })();
