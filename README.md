@@ -10,15 +10,18 @@ It runs entirely in your web browser. There is nothing to install.
 
 Use an up-to-date Chrome, Edge, Firefox or Safari.
 
-## What's here so far (Stage 1, Part 1a)
+## What's here so far (Stage 1)
 
 - **Brush** with 6 types: Pen, Pencil, Marker, Soft brush, Airbrush, Calligraphy
   - Size, opacity, smoothing (steadies shaky lines) and stylus pressure
 - **Eraser** with size, softness and smoothing
+- **Blend tool** with three modes: Smudge (drag paint), Soften (blur edges), Mix (blend colors like wet paint)
+- **Layers** (up to 20): add, duplicate, delete, merge down, move up/down, rename,
+  show/hide, lock, opacity, and blend modes (Normal, Multiply, Screen, Overlay, Add, Color)
 - **Color wheel**: hue ring + brightness/vividness square, hex code box,
   previous/current color, the last 10 colors you used, and an eyedropper
 - **Pick color** tool: tap your drawing to grab a color from it
-- **Undo / Redo** (last 50 steps) and **Clear**
+- **Undo / Redo** (last 50 steps, including layer changes) and **Clear** (clears the selected layer)
 - Works with mouse, finger and stylus
 
 ### Keyboard shortcuts
@@ -27,7 +30,7 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 | --- | --- |
 | Ctrl+Z (Cmd+Z on Mac) | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
-| B / E / I | Brush / Eraser / Pick color |
+| B / E / S / I | Brush / Eraser / Blend / Pick color |
 | [ and ] | Smaller / bigger brush |
 | Esc | Close a panel |
 
@@ -39,12 +42,12 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 | `css/style.css` | How it looks |
 | `js/app.js` | The main program that connects everything |
 | `js/brushes.js` | How each brush paints |
+| `js/blendtool.js` | The Blend tool (smudge, soften, mix) |
 | `js/color.js` | The color wheel |
 | `js/history.js` | Undo / redo |
 
 ## Coming next
 
-- **Part 1b:** layers (up to 20), layer blend modes, and a Blend tool (smudge / soften / mix)
 - **Stage 2:** frames, onion skinning and playback
 - **Stage 3:** importing images
 - **Stage 4:** audio

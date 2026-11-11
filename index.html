@@ -18,6 +18,10 @@
         <svg viewBox="0 0 24 24"><path d="M20 20H9l-5.5-5.5a2 2 0 0 1 0-2.8l8.7-8.7a2 2 0 0 1 2.8 0l5.5 5.5a2 2 0 0 1 0 2.8L13 18.8"/><path d="m6 11 7 7"/></svg>
         <span>Eraser</span>
       </button>
+      <button class="btn" data-tool="blend" title="Blend: smudge, soften or mix colors (S)">
+        <svg viewBox="0 0 24 24"><path d="M12 2.7S6 9.1 6 14a6 6 0 0 0 12 0c0-4.9-6-11.3-6-11.3z"/><path d="M9.5 15a2.5 2.5 0 0 0 2.5 2.5"/></svg>
+        <span>Blend</span>
+      </button>
       <button class="btn" data-tool="eyedropper" title="Pick a color from the drawing (I)">
         <svg viewBox="0 0 24 24"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3-3a2.1 2.1 0 0 1 3 3l-3 3 .5.5a1.4 1.4 0 0 1-2 2L11 6.5a1.4 1.4 0 0 1 2-2z"/></svg>
         <span>Pick color</span>
@@ -58,6 +62,15 @@
         <span>Clear</span>
       </button>
     </div>
+
+    <div class="divider"></div>
+
+    <div class="group">
+      <button class="btn" id="btn-layers" data-panel="panel-layers" title="Layers">
+        <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
+        <span id="layers-label">Layers</span>
+      </button>
+    </div>
   </header>
 
   <!-- ===== Drawing area ===== -->
@@ -91,6 +104,31 @@
       <label class="check"><input type="checkbox" id="b-pressure"> Stylus pressure changes the line</label>
     </section>
 
+    <section id="blend-section" hidden>
+      <h2>Blend</h2>
+      <div class="segmented" id="blend-modes">
+        <button data-mode="smudge" title="Push and drag color in the direction you move">Smudge</button>
+        <button data-mode="soften" title="Blur hard edges into smooth transitions">Soften</button>
+        <button data-mode="mix" title="Blend neighboring colors like wet paint">Mix</button>
+      </div>
+      <div class="field">
+        <label for="x-size">Size</label>
+        <input type="range" id="x-size" min="0" max="100">
+        <output id="x-size-out"></output>
+      </div>
+      <div class="field">
+        <label for="x-strength">Strength</label>
+        <input type="range" id="x-strength" min="1" max="100">
+        <output id="x-strength-out"></output>
+      </div>
+      <div class="field">
+        <label for="x-smoothing">Smoothing</label>
+        <input type="range" id="x-smoothing" min="0" max="100">
+        <output id="x-smoothing-out"></output>
+      </div>
+      <label class="check"><input type="checkbox" id="x-pressure"> Stylus pressure changes the strength</label>
+    </section>
+
     <section id="eraser-section" hidden>
       <h2>Eraser</h2>
       <div class="field">
@@ -111,15 +149,46 @@
     </section>
   </div>
 
+  <!-- ===== Pop-out panel: layers ===== -->
+  <div class="panel panel-wide" id="panel-layers" hidden>
+    <h2>Layers <span class="muted" id="layer-count"></span></h2>
+    <div class="mini-grid">
+      <button class="mini" id="l-add" title="Add a new empty layer above the selected one">+ New layer</button>
+      <button class="mini" id="l-dup" title="Make a copy of the selected layer">Duplicate</button>
+      <button class="mini" id="l-merge" title="Combine the selected layer with the one below it">Merge down</button>
+      <button class="mini danger" id="l-del" title="Delete the selected layer">Delete</button>
+    </div>
+    <ul class="layer-list" id="layer-list"></ul>
+    <div class="layer-props">
+      <div class="field">
+        <label for="l-opacity">Opacity</label>
+        <input type="range" id="l-opacity" min="0" max="100">
+        <output id="l-opacity-out"></output>
+      </div>
+      <div class="field">
+        <label for="l-blend">Blend mode</label>
+        <select id="l-blend"></select>
+      </div>
+      <div class="mini-grid three">
+        <button class="mini" id="l-up" title="Move the selected layer up the stack">Move up</button>
+        <button class="mini" id="l-down" title="Move the selected layer down the stack">Move down</button>
+        <button class="mini" id="l-rename" title="Rename the selected layer">Rename</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== Pop-out panel: color wheel ===== -->
   <div class="panel" id="panel-color" hidden>
     <h2>Color</h2>
     <div id="color-picker"></div>
   </div>
 
+  <div id="toast" role="status" aria-live="polite"></div>
+
   <script src="js/color.js"></script>
   <script src="js/history.js"></script>
   <script src="js/brushes.js"></script>
+  <script src="js/blendtool.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
