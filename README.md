@@ -50,12 +50,26 @@ Sound plays with the animation in **Loop** and **Once** modes, perfectly in step
 again each time round). The frame thumbnails show a small waveform, so you can see where words or
 beats land. Sounds are saved with your project.
 
+## Exporting a video
+
+Tap the **Export** button (arrow out of a box, top left):
+
+- **Size:** Small (640×360), HD (1280×720) or Full HD (1920×1080).
+- **Play through:** once, 2 times or 3 times.
+- **Include sound:** adds your sounds to the video.
+- **Export video:** the animation plays into a recorder, so it takes as long as the video lasts.
+  Keep the tab open and in front until it finishes. The video goes to your Downloads folder.
+- **Save this frame as a picture (PNG).**
+
+The format is **MP4** in recent Chrome, Edge and Safari (plays almost everywhere), and **WebM** in
+Firefox (plays in browsers, VLC and on YouTube).
+
 ## The screen
 
 - **Top bar, right:** Brush, Blend, Eraser, Pick color, Select, Transform, Layers, Color.
   Tap a tool to choose it; **tap it again** to open its settings.
-- **Top bar, left:** the menu (project, view, touch settings, gestures, clear layer), the project
-  name with its save status, and the zoom level (tap it to fit the canvas to the screen).
+- **Top bar, left:** the menu (project, insert image, view, touch settings, gestures, clear layer),
+  Export, the project name with its save status, and the zoom level (tap it to fit the canvas).
 - **Side bar (left):** drag the top slider for **size** and the bottom slider for **opacity**
   (strength for the Blend tool), plus **Undo** and **Redo**.
 - **Timeline (bottom):** play/stop, speed, onion skin, and the frames.
@@ -145,6 +159,8 @@ beats land. Sounds are saved with your project.
 | `js/storage.js` | Saving in the browser, and project files |
 | `js/audio.js` | Sound: decoding, waveforms and in-sync playback |
 
-## Coming next
+## Ideas for later
 
-- **Stage 6:** exporting video with audio
+- A gallery of several projects inside the app
+- Exporting animated GIFs or a set of PNG frames
+- Putting the app online with GitHub Pages so it opens from a web address on any device

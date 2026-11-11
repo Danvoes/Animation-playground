@@ -13,6 +13,9 @@
       <button class="tb" id="btn-menu" data-panel="panel-menu" title="Menu: view, touch settings, gestures, clear layer">
         <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
+      <button class="tb" id="btn-export" data-panel="panel-export" title="Export a video of your animation">
+        <svg viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 14v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></svg>
+      </button>
       <button class="project-title" id="project-title" data-panel="panel-menu" title="Project name and save status">
         <span id="title-name">Untitled</span>
         <span class="save-status" id="save-status"></span>
@@ -284,6 +287,39 @@
       "Starts at" is when a sound begins, counted from frame 1. Recording plays your animation from the
       current frame so you can speak in time with it.</p>
     <input type="file" id="a-file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.aac,.flac" hidden>
+  </div>
+
+  <!-- ===== Pop-out panel: export ===== -->
+  <div class="panel" id="panel-export" hidden>
+    <h2>Export video</h2>
+    <div class="segmented" id="ex-size">
+      <button data-v="360" title="640 × 360: small file, quick to share">Small</button>
+      <button data-v="720" title="1280 × 720: the drawing's own size">HD</button>
+      <button data-v="1080" title="1920 × 1080: enlarged for big screens">Full HD</button>
+    </div>
+    <h2 class="gap">Play through</h2>
+    <div class="segmented" id="ex-loops">
+      <button data-v="1">Once</button>
+      <button data-v="2">2 times</button>
+      <button data-v="3">3 times</button>
+    </div>
+    <label class="check"><input type="checkbox" id="ex-sound"> Include sound</label>
+    <p class="hint" id="ex-info"></p>
+    <button class="mini primary wide" id="ex-start" style="margin-top:12px">Export video</button>
+    <h2 class="gap">Picture</h2>
+    <button class="mini wide" id="ex-png" title="Save the frame you're on as a PNG picture">Save this frame as a picture (PNG)</button>
+  </div>
+
+  <!-- While a video is being made -->
+  <div id="export-overlay" hidden>
+    <div class="export-box">
+      <h2>Making your video…</h2>
+      <div class="export-preview" id="ex-preview"></div>
+      <div class="progress"><div class="progress-bar" id="ex-bar"></div></div>
+      <p class="hint" id="ex-status"></p>
+      <p class="hint">Keep this tab open and in front until it's done.</p>
+      <button class="mini wide" id="ex-cancel">Cancel</button>
+    </div>
   </div>
 
   <!-- ===== Pop-out panel: menu ===== -->

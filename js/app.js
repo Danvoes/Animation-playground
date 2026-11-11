@@ -174,6 +174,9 @@
     playMode: ['loop', 'pingpong', 'once'].includes(saved.playMode) ? saved.playMode : 'loop',
     selectMode: saved.selectMode === 'rect' ? 'rect' : 'lasso',
     tfUniform: saved.tfUniform !== false,
+    exportSize: ['360', '720', '1080'].includes(saved.exportSize) ? saved.exportSize : '720',
+    exportLoops: [1, 2, 3].includes(saved.exportLoops) ? saved.exportLoops : 1,
+    exportSound: saved.exportSound !== false,
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
@@ -187,6 +190,7 @@
       fingerDraw: state.fingerDraw, stylusSeen: typeof stylusSeen !== 'undefined' && stylusSeen,
       quickShape: state.quickShape, fillGap: state.fillGap, playMode: state.playMode,
       selectMode: state.selectMode, tfUniform: state.tfUniform,
+      exportSize: state.exportSize, exportLoops: state.exportLoops, exportSound: state.exportSound,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -2410,6 +2414,7 @@
     if (panel.id === 'panel-color') picker.markPrevious();
     if (panel.id === 'panel-frame') refreshFramePanel();
     if (panel.id === 'panel-audio') buildAudioList();
+    if (panel.id === 'panel-export') refreshExportPanel();
     if (panel.id === 'panel-menu') $('#p-name').value = project.name === 'Untitled' ? '' : project.name;
     const r = anchor.getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
@@ -3358,9 +3363,181 @@
   window.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
 
   // ---------------------------------------------------------------------------
+  // Exporting: a video file (with sound), or one frame as a picture
+  // ---------------------------------------------------------------------------
+  const EXPORT_SIZES = { 360: [640, 360], 720: [1280, 720], 1080: [1920, 1080] };
+  let exporting = null;
+
+  // The best video format this browser can record. MP4 plays almost everywhere;
+  // WebM is the fallback (Firefox, older Chrome).
+  function pickVideoType(withSound) {
+    if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) return null;
+    const ok = (t) => { try { return MediaRecorder.isTypeSupported(t); } catch (_) { return false; } };
+    // 1. MP4 with standard H.264 video (plays on phones, Macs, PCs and social sites).
+    const mp4 = withSound
+      ? ['video/mp4;codecs=avc1.42E01F,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4;codecs=avc1,opus']
+      : ['video/mp4;codecs=avc1.42E01F', 'video/mp4;codecs=avc1'];
+    // 2. WebM (Firefox, and browsers without H.264).
+    const webm = withSound
+      ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm']
+      : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+    // 3. A plain "MP4" request only when WebM isn't available (Safari), where it means H.264.
+    const plain = ok('video/webm') ? [] : ['video/mp4'];
+    return mp4.concat(webm, plain).find(ok) || null;
+  }
+  const fmtDuration = (sec) => {
+    const m = Math.floor(sec / 60), r = Math.round(sec - m * 60);
+    return m ? `${m} min ${r} s` : `${(Math.round(sec * 10) / 10).toFixed(1)} s`;
+  };
+
+  function refreshExportPanel() {
+    $$('#ex-size button').forEach((b) => b.classList.toggle('active', b.dataset.v === state.exportSize));
+    $$('#ex-loops button').forEach((b) => b.classList.toggle('active', +b.dataset.v === state.exportLoops));
+    const hasSound = audibleClips().length > 0;
+    $('#ex-sound').checked = state.exportSound && hasSound;
+    $('#ex-sound').disabled = !hasSound;
+    $('#ex-sound').parentElement.style.opacity = hasSound ? '' : '0.5';
+    const withSound = state.exportSound && hasSound;
+    const type = pickVideoType(withSound);
+    const [W, H] = EXPORT_SIZES[state.exportSize];
+    const total = buildTimeline().total * state.exportLoops;
+    if (!type) {
+      $('#ex-info').textContent = 'This browser can\'t make videos. Try a recent Chrome, Edge or Safari.';
+      $('#ex-start').disabled = true;
+      return;
+    }
+    $('#ex-start').disabled = false;
+    $('#ex-info').textContent = `${type.includes('mp4') ? 'MP4' : 'WebM'} video · ${W}×${H} · ${fmtDuration(total)}` +
+      (withSound ? ' · with sound' : hasSound ? ' · no sound' : '') +
+      `. Making it takes about ${fmtDuration(total)}.`;
+  }
+  $$('#ex-size button').forEach((b) => b.addEventListener('click', () => { state.exportSize = b.dataset.v; saveSettings(); refreshExportPanel(); }));
+  $$('#ex-loops button').forEach((b) => b.addEventListener('click', () => { state.exportLoops = +b.dataset.v; saveSettings(); refreshExportPanel(); }));
+  $('#ex-sound').addEventListener('change', (e) => { state.exportSound = e.target.checked; saveSettings(); refreshExportPanel(); });
+
+  // Make the video by playing the animation (and its sound) into a recorder.
+  async function startExport() {
+    if (busy() || exporting) return;
+    if (transform) applyTransform();
+    stopPlay();
+    closePanels();
+    const [W, H] = EXPORT_SIZES[state.exportSize];
+    const loops = state.exportLoops;
+    const withSound = state.exportSound && audibleClips().length > 0;
+    const type = pickVideoType(withSound);
+    if (!type) { toast('This browser can\'t make videos. Try a recent Chrome, Edge or Safari.'); return; }
+
+    const tl = buildTimeline();
+    const T = tl.total, total = T * loops;
+    const ec = makeCanvas(W, H);
+    const ectx = ec.getContext('2d');
+    drawFrame(ectx, doc.frames[0], { w: W, h: H });
+    // The canvas being recorded doubles as the preview.
+    const preview = $('#ex-preview');
+    preview.innerHTML = '';
+    preview.appendChild(ec);
+
+    const videoStream = ec.captureStream();
+    const tracks = [...videoStream.getVideoTracks()];
+    let actx = null, dest = null;
+    if (withSound) {
+      actx = SoundEngine.getCtx();
+      if (actx.state === 'suspended') await actx.resume();
+      dest = actx.createMediaStreamDestination();
+      tracks.push(...dest.stream.getAudioTracks());
+    }
+    let rec;
+    try {
+      rec = new MediaRecorder(new MediaStream(tracks), {
+        mimeType: type,
+        videoBitsPerSecond: W >= 1920 ? 10e6 : W >= 1280 ? 6e6 : 2.5e6,
+        audioBitsPerSecond: 160000,
+      });
+    } catch (err) {
+      console.warn(err);
+      videoStream.getTracks().forEach((t) => t.stop());
+      toast('The video couldn\'t be started in this browser. Try a different size or browser.');
+      return;
+    }
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    const finished = new Promise((resolve) => { rec.onstop = resolve; });
+    const job = exporting = { rec, cancelled: false, nodes: [] };
+    $('#export-overlay').hidden = false;
+    $('#ex-bar').style.width = '0%';
+
+    const now = () => (withSound ? actx.currentTime : performance.now() / 1000);
+    rec.start(250);
+    const t0 = now() + 0.08; // a short moment for the recorder to get going
+    if (withSound) {
+      for (let k = 0; k < loops; k++) job.nodes.push(...SoundEngine.schedule(audibleClips(), 0, T, t0 + k * T, dest));
+    }
+    let lastDraw = 0;
+    const tick = () => {
+      if (job.cancelled || rec.state === 'inactive') return;
+      const t = now() - t0;
+      // Redraw often (even when the picture doesn't change) so the video has a steady frame rate.
+      const wall = performance.now();
+      if (wall - lastDraw > 30) {
+        lastDraw = wall;
+        const tt = Math.max(0, Math.min(t, total - 1e-6));
+        drawFrame(ectx, doc.frames[frameAtTime(tl, tt % T)], { w: W, h: H });
+      }
+      const shown = Math.max(0, Math.min(t, total));
+      $('#ex-bar').style.width = (shown / total) * 100 + '%';
+      $('#ex-status').textContent = `${fmtDuration(shown)} of ${fmtDuration(total)}`;
+      if (t >= total + 0.1) { rec.stop(); return; }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+
+    await finished;
+    videoStream.getTracks().forEach((t) => t.stop());
+    SoundEngine.stopAll(job.nodes);
+    $('#export-overlay').hidden = true;
+    preview.innerHTML = '';
+    exporting = null;
+    if (job.cancelled) { toast('Export cancelled.'); return; }
+    const blob = new Blob(chunks, { type: type.split(';')[0] });
+    if (!blob.size) { toast('Sorry, the video came out empty. Please try again.'); return; }
+    const fileName = `${safeFileName(project.name)}.${type.includes('mp4') ? 'mp4' : 'webm'}`;
+    ProjectStorage.download(blob, fileName);
+    toast(`Video saved: "${fileName}" (${(blob.size / 1048576).toFixed(1)} MB) in your Downloads folder.`, 5000);
+  }
+  function cancelExport() {
+    if (!exporting) return;
+    exporting.cancelled = true;
+    if (exporting.rec.state !== 'inactive') exporting.rec.stop();
+  }
+  $('#ex-start').addEventListener('click', startExport);
+  $('#ex-cancel').addEventListener('click', cancelExport);
+
+  // One frame as a PNG picture, at the chosen size.
+  $('#ex-png').addEventListener('click', async () => {
+    if (transform) applyTransform();
+    closePanels();
+    const [W, H] = EXPORT_SIZES[state.exportSize];
+    const c = makeCanvas(W, H);
+    drawFrame(c.getContext('2d'), doc.frame, { w: W, h: H });
+    try {
+      const blob = await ProjectStorage.canvasToBlob(c);
+      const fileName = `${safeFileName(project.name)} - frame ${frameIndex() + 1}.png`;
+      ProjectStorage.download(blob, fileName);
+      toast(`Picture saved: "${fileName}" in your Downloads folder.`);
+    } catch (err) {
+      toast('Sorry, the picture couldn\'t be saved.');
+    }
+  });
+
+  // ---------------------------------------------------------------------------
   // Keyboard shortcuts
   // ---------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
+    if (exporting) {
+      e.preventDefault();
+      if (e.key === 'Escape') cancelExport();
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key.toLowerCase() === 's' || e.key.toLowerCase() === 'o')) {
       e.preventDefault();
       if (e.key.toLowerCase() === 's') saveToFile(); else openFile();
