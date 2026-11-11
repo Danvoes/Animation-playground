@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Animation Playground</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- ===== Top toolbar ===== -->
+  <header class="toolbar">
+    <div class="group">
+      <button class="btn" data-tool="brush" title="Brush (B)">
+        <svg viewBox="0 0 24 24"><path d="M18.4 2.6a2 2 0 0 1 2.9 2.9L11.5 15.3l-2.8-2.8z"/><path d="M7.5 14.5c-2 0-3.5 1.6-3.5 3.5 0 1.2-.8 2-2 2.5 1.2.8 2.6 1 4 1 2.5 0 4.5-2 4.5-4.5z"/></svg>
+        <span>Brush</span>
+      </button>
+      <button class="btn" data-tool="eraser" title="Eraser (E)">
+        <svg viewBox="0 0 24 24"><path d="M20 20H9l-5.5-5.5a2 2 0 0 1 0-2.8l8.7-8.7a2 2 0 0 1 2.8 0l5.5 5.5a2 2 0 0 1 0 2.8L13 18.8"/><path d="m6 11 7 7"/></svg>
+        <span>Eraser</span>
+      </button>
+      <button class="btn" data-tool="eyedropper" title="Pick a color from the drawing (I)">
+        <svg viewBox="0 0 24 24"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3-3a2.1 2.1 0 0 1 3 3l-3 3 .5.5a1.4 1.4 0 0 1-2 2L11 6.5a1.4 1.4 0 0 1 2-2z"/></svg>
+        <span>Pick color</span>
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="group">
+      <button class="btn" id="btn-settings" data-panel="panel-brush" title="Brush type and settings">
+        <svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg>
+        <span id="settings-label">Pen</span>
+      </button>
+      <label class="size-quick" title="Size ( [ and ] keys )">
+        <span>Size</span>
+        <input type="range" id="quick-size" min="0" max="100">
+        <output id="quick-size-out">6</output>
+      </label>
+      <button class="btn" id="btn-color" data-panel="panel-color" title="Color wheel">
+        <span class="swatch" id="color-swatch"></span>
+        <span>Color</span>
+      </button>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="group">
+      <button class="btn" id="btn-undo" title="Undo (Ctrl+Z)">
+        <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+        <span>Undo</span>
+      </button>
+      <button class="btn" id="btn-redo" title="Redo (Ctrl+Y or Ctrl+Shift+Z)">
+        <svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+        <span>Redo</span>
+      </button>
+      <button class="btn" id="btn-clear" title="Clear the canvas (can be undone)">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+        <span>Clear</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== Drawing area ===== -->
+  <main id="stage">
+    <div id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div id="cursor"></div>
+    </div>
+  </main>
+
+  <!-- ===== Pop-out panel: brush / eraser settings ===== -->
+  <div class="panel" id="panel-brush" hidden>
+    <section id="brush-section">
+      <h2>Brush type</h2>
+      <div class="brush-grid" id="brush-types"></div>
+      <div class="field">
+        <label for="b-size">Size</label>
+        <input type="range" id="b-size" min="0" max="100">
+        <output id="b-size-out"></output>
+      </div>
+      <div class="field">
+        <label for="b-opacity">Opacity</label>
+        <input type="range" id="b-opacity" min="1" max="100">
+        <output id="b-opacity-out"></output>
+      </div>
+      <div class="field">
+        <label for="b-smoothing">Smoothing</label>
+        <input type="range" id="b-smoothing" min="0" max="100">
+        <output id="b-smoothing-out"></output>
+      </div>
+      <label class="check"><input type="checkbox" id="b-pressure"> Stylus pressure changes the line</label>
+    </section>
+
+    <section id="eraser-section" hidden>
+      <h2>Eraser</h2>
+      <div class="field">
+        <label for="e-size">Size</label>
+        <input type="range" id="e-size" min="0" max="100">
+        <output id="e-size-out"></output>
+      </div>
+      <div class="field">
+        <label for="e-softness">Softness</label>
+        <input type="range" id="e-softness" min="0" max="100">
+        <output id="e-softness-out"></output>
+      </div>
+      <div class="field">
+        <label for="e-smoothing">Smoothing</label>
+        <input type="range" id="e-smoothing" min="0" max="100">
+        <output id="e-smoothing-out"></output>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===== Pop-out panel: color wheel ===== -->
+  <div class="panel" id="panel-color" hidden>
+    <h2>Color</h2>
+    <div id="color-picker"></div>
+  </div>
+
+  <script src="js/color.js"></script>
+  <script src="js/history.js"></script>
+  <script src="js/brushes.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,2 +1,52 @@
-# Animation-playground
-First crack at an app. This is for an animation app
+# Animation Playground
+
+A simple web app for drawing and (soon) making frame-by-frame animations.
+It runs entirely in your web browser. There is nothing to install.
+
+## How to open it
+
+1. Download this project (on GitHub: green **Code** button → **Download ZIP**), then unzip it.
+2. Double-click **`index.html`**. It opens in your web browser.
+
+Use an up-to-date Chrome, Edge, Firefox or Safari.
+
+## What's here so far (Stage 1, Part 1a)
+
+- **Brush** with 6 types: Pen, Pencil, Marker, Soft brush, Airbrush, Calligraphy
+  - Size, opacity, smoothing (steadies shaky lines) and stylus pressure
+- **Eraser** with size, softness and smoothing
+- **Color wheel**: hue ring + brightness/vividness square, hex code box,
+  previous/current color, the last 10 colors you used, and an eyedropper
+- **Pick color** tool: tap your drawing to grab a color from it
+- **Undo / Redo** (last 50 steps) and **Clear**
+- Works with mouse, finger and stylus
+
+### Keyboard shortcuts
+
+| Key | Does |
+| --- | --- |
+| Ctrl+Z (Cmd+Z on Mac) | Undo |
+| Ctrl+Y or Ctrl+Shift+Z | Redo |
+| B / E / I | Brush / Eraser / Pick color |
+| [ and ] | Smaller / bigger brush |
+| Esc | Close a panel |
+
+## Project files
+
+| File | What it is |
+| --- | --- |
+| `index.html` | The page: toolbar, canvas, panels |
+| `css/style.css` | How it looks |
+| `js/app.js` | The main program that connects everything |
+| `js/brushes.js` | How each brush paints |
+| `js/color.js` | The color wheel |
+| `js/history.js` | Undo / redo |
+
+## Coming next
+
+- **Part 1b:** layers (up to 20), layer blend modes, and a Blend tool (smudge / soften / mix)
+- **Stage 2:** frames, onion skinning and playback
+- **Stage 3:** importing images
+- **Stage 4:** audio
+- **Stage 5:** saving and reopening projects
+- **Stage 6:** exporting video with audio
