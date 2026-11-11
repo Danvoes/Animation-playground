@@ -12,7 +12,7 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 
 ## The screen
 
-- **Top bar, right:** Brush, Blend, Eraser, Pick color, Layers, Color.
+- **Top bar, right:** Brush, Blend, Eraser, Pick color, Select, Transform, Layers, Color.
   Tap a tool to choose it; **tap it again** to open its settings.
 - **Top bar, left:** the menu (view, touch settings, gestures, clear layer) and the zoom level
   (tap it to fit the canvas to the screen).
@@ -22,8 +22,11 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 
 ## What it can do
 
-- **Brush** with 6 types: Pen, Pencil, Marker, Soft brush, Airbrush, Calligraphy
+- **Brush** with 12 types: Pen, Ink, Pencil, Charcoal, Crayon, Marker, Soft brush,
+  Watercolor, Airbrush, Splatter, Calligraphy, Glow
   - Size, opacity, smoothing (steadies shaky lines) and stylus pressure
+  - Fine-tune each brush: **Taper** (thin ends), **Light touch** (size at light pressure),
+    **Jitter** (rougher, hand-made line), and **Reset this brush**
 - **Eraser** with size, opacity, softness and smoothing
 - **Blend tool** with three modes: Smudge (drag paint), Soften (blur edges), Mix (blend colors like wet paint)
 - **Layers** (up to 20): add, duplicate, delete, merge down, move up/down, rename,
@@ -44,6 +47,12 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
   ("Fill gaps" in the menu controls how far the fill spreads)
 - **Pick a color** with the Pick color tool, **Alt + click** (Option + click on Mac), or
   **touch and hold** with a finger when finger drawing is off
+- **Select** an area (freehand or rectangle). While something is selected, drawing, erasing,
+  blending and filling only change the inside. Tap Select again for: Select all, Deselect,
+  Invert, Copy to new layer, Fill with color, Erase inside.
+- **Transform**: move, resize and rotate the selection (or the whole layer if nothing is
+  selected). Drag inside to move, drag a corner to resize, drag the round handle to rotate.
+  Also: Keep proportions, Flip, Rotate 90°, Reset, Cancel, Done.
 - **Zoom, rotate and move the canvas**
 - Works with mouse, finger and stylus, with **palm rejection**: once a stylus is used,
   fingers stop drawing (they still zoom, rotate and undo). Change this in the menu.
@@ -71,11 +80,14 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 | Ctrl+Z (Cmd+Z on Mac) | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | B / E / S / I | Brush / Eraser / Blend / Pick color |
+| L / V | Select / Transform |
+| Ctrl+A / Ctrl+D | Select all / Deselect |
+| Enter | Finish a transform |
 | [ and ] | Smaller / bigger brush |
 | Space | Play / stop |
 | ← → (or , .) | Previous / next frame |
 | O | Onion skin on / off |
-| Esc | Close a panel |
+| Esc | Close a panel, cancel a transform, or deselect |
 
 ## Project files
 
@@ -96,4 +108,3 @@ Use an up-to-date Chrome, Edge, Firefox or Safari.
 - **Stage 4:** audio
 - **Stage 5:** saving and reopening projects
 - **Stage 6:** exporting video with audio
-- More from the improvement list: selection and transform, more brushes

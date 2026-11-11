@@ -151,6 +151,8 @@
   const buffer = makeCanvas(DOC_W, DOC_H), bctx = buffer.getContext('2d');
   // Used to preview the stroke on its layer while you're still drawing.
   const scratch = makeCanvas(DOC_W, DOC_H), sctx = scratch.getContext('2d');
+  // The stroke buffer clipped to the selection.
+  const maskedBuf = makeCanvas(DOC_W, DOC_H), mctx = maskedBuf.getContext('2d');
 
   // ---------------------------------------------------------------------------
   // Settings (remembered between visits)
@@ -170,6 +172,8 @@
     quickShape: saved.quickShape !== false,
     fillGap: saved.fillGap != null ? saved.fillGap : 12,
     playMode: ['loop', 'pingpong', 'once'].includes(saved.playMode) ? saved.playMode : 'loop',
+    selectMode: saved.selectMode === 'rect' ? 'rect' : 'lasso',
+    tfUniform: saved.tfUniform !== false,
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
@@ -182,6 +186,7 @@
       onion: state.onion, fps: doc.fps,
       fingerDraw: state.fingerDraw, stylusSeen: typeof stylusSeen !== 'undefined' && stylusSeen,
       quickShape: state.quickShape, fillGap: state.fillGap, playMode: state.playMode,
+      selectMode: state.selectMode, tfUniform: state.tfUniform,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -209,8 +214,14 @@
 
   const busy = () => !!(stroke || blendStroke);
 
-  function undo() { if (!busy()) { stopPlay(); afterHistory(history.undo()); } }
-  function redo() { if (!busy()) { stopPlay(); afterHistory(history.redo()); } }
+  function undo() {
+    if (transform) { cancelTransform(); return; } // undo while transforming = cancel it
+    if (!busy()) { stopPlay(); afterHistory(history.undo()); }
+  }
+  function redo() {
+    if (transform) return;
+    if (!busy()) { stopPlay(); afterHistory(history.redo()); }
+  }
 
   // After undo/redo: go to the frame that changed, and refresh everything.
   let stripSignature = '';
@@ -233,14 +244,15 @@
     return true;
   }
 
-  function pushPixelStep(label, layer, cel, rect, before, after) {
+  // extra (optional): { undo(), redo() } for anything else that changes with the pixels.
+  function pushPixelStep(label, layer, cel, rect, before, after, extra) {
     const ctx = cel.getContext('2d');
     history.push({
       label,
       frame: doc.frame,
       allFrames: layer.static,
-      undo() { ctx.putImageData(before, rect.x, rect.y); },
-      redo() { ctx.putImageData(after, rect.x, rect.y); },
+      undo() { ctx.putImageData(before, rect.x, rect.y); if (extra) extra.undo(); },
+      redo() { ctx.putImageData(after, rect.x, rect.y); if (extra) extra.redo(); },
     });
     if (layer.static) markAllThumbs(); else markThumb(doc.frame);
     refreshLayersPanel();
@@ -251,9 +263,23 @@
     stopPlay();
     const layer = activeLayer();
     if (!canEdit(layer)) return;
+    if (transform) applyTransform();
     const cel = celOf(layer, doc.frame);
     if (!cel) { toast(`"${layer.name}" is already empty on this frame.`); return; }
     const ctx = cel.getContext('2d');
+    if (selection) {
+      // Only erase inside the selection.
+      const r = selection.bounds;
+      const before = ctx.getImageData(r.x, r.y, r.w, r.h);
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.drawImage(selection.mask, 0, 0);
+      ctx.restore();
+      const after = ctx.getImageData(r.x, r.y, r.w, r.h);
+      pushPixelStep('Erase selection', layer, cel, r, before, after);
+      requestRender();
+      return;
+    }
     const rect = { x: 0, y: 0, w: DOC_W, h: DOC_H };
     const before = ctx.getImageData(0, 0, DOC_W, DOC_H);
     ctx.clearRect(0, 0, DOC_W, DOC_H);
@@ -285,12 +311,31 @@
       sctx.globalAlpha = 1;
       sctx.clearRect(0, 0, DOC_W, DOC_H);
       if (cel) sctx.drawImage(cel, 0, 0);
+      let src = buffer;
+      if (selection) {
+        // Only show paint inside the selection.
+        mctx.globalCompositeOperation = 'source-over';
+        mctx.clearRect(0, 0, DOC_W, DOC_H);
+        mctx.drawImage(buffer, 0, 0);
+        mctx.globalCompositeOperation = 'destination-in';
+        mctx.drawImage(selection.mask, 0, 0);
+        mctx.globalCompositeOperation = 'source-over';
+        src = maskedBuf;
+      }
       sctx.globalAlpha = stroke.opacity;
       sctx.globalCompositeOperation = stroke.composite;
-      sctx.drawImage(buffer, 0, 0);
+      sctx.drawImage(src, 0, 0);
       sctx.globalAlpha = 1;
       sctx.globalCompositeOperation = 'source-over';
       override = { layer, canvas: scratch };
+    } else if (transform && transform.frame === doc.frame) {
+      // Show the layer with the moved/resized/rotated part in its new place.
+      sctx.globalCompositeOperation = 'source-over';
+      sctx.globalAlpha = 1;
+      sctx.clearRect(0, 0, DOC_W, DOC_H);
+      sctx.drawImage(transform.hole, 0, 0);
+      drawTransformed(sctx, transform.float);
+      override = { layer: transform.layer, canvas: scratch };
     }
     drawFrame(dctx, doc.frame, { override });
     if (onionDirty) drawOnion();
@@ -357,6 +402,7 @@
     baseH = Math.max(28, Math.floor(DOC_H * scale));
     wrap.style.width = baseW + 'px';
     wrap.style.height = baseH + 'px';
+    sizeUI();
     applyView();
   }
   if (window.ResizeObserver) new ResizeObserver(fit).observe(stage);
@@ -367,6 +413,7 @@
       `translate(-50%, -50%) translate(${view.tx}px, ${view.ty}px) rotate(${view.r}rad) scale(${view.s})`;
     const zoom = (view.s * baseW) / DOC_W; // 1 = real pixel size
     wrap.classList.toggle('pixelated', zoom >= 4);
+    if (typeof drawSelOverlay === 'function') { drawSelOverlay(); drawUI(); }
     let deg = Math.round(((view.r * 180) / Math.PI) % 360);
     if (deg > 180) deg -= 360;
     if (deg <= -180) deg += 360;
@@ -417,8 +464,9 @@
 
   // The circle that shows your brush size under the mouse or stylus.
   function updateCursor(e) {
-    if (e.pointerType === 'touch' || state.tool === 'eyedropper' || playing || gesture ||
-        (e.target.closest && e.target.closest('.sidebar'))) {
+    if (e.pointerType === 'touch' || state.tool === 'eyedropper' || state.tool === 'select' ||
+        state.tool === 'transform' || playing || gesture ||
+        (e.target.closest && e.target.closest('.sidebar, .transform-bar'))) {
       cursorEl.style.display = 'none';
       return;
     }
@@ -435,7 +483,7 @@
 
   // Mouse wheel zooms; Shift + wheel rotates. (A trackpad pinch also zooms.)
   stage.addEventListener('wheel', (e) => {
-    if (e.target.closest('.sidebar')) return;
+    if (e.target.closest('.sidebar, .transform-bar')) return;
     e.preventDefault();
     const p = stagePoint(e, stage.getBoundingClientRect());
     let d = e.deltaY || e.deltaX;
@@ -466,6 +514,7 @@
   let holdPickTimer = null;
   // QuickShape
   let strokeOpts = null, strokePts = [], snapped = false, holdTimer = null, holdAt = null;
+  let strokeTaper = 0, strokeDist = 0; // taper length in pixels, distance drawn so far
 
   // Palm rejection: the first time a stylus is used, finger drawing turns off.
   function noticeStylus() {
@@ -487,7 +536,13 @@
     smooth.y += (p.y - smooth.y) * k;
     smooth.pressure += (p.pressure - smooth.pressure) * Math.min(1, k * 1.5);
     const q = { x: smooth.x, y: smooth.y, pressure: smooth.pressure };
-    if (stroke) strokePts.push(q);
+    if (stroke) {
+      const lp = strokePts[strokePts.length - 1];
+      strokeDist += Math.hypot(q.x - lp.x, q.y - lp.y);
+      q.d = strokeDist;
+      q.w = Brushes.taperAt(strokeDist, null, strokeTaper); // thin start; the end is tapered on release
+      strokePts.push(q);
+    }
     (stroke || blendStroke).moveTo(q);
   }
 
@@ -561,6 +616,13 @@
       return;
     }
 
+    if (state.tool === 'select') { beginSelect(e, p); return; }
+    if (state.tool === 'transform') {
+      if (!transform && !startTransform()) return;
+      beginTransformDrag(e);
+      return;
+    }
+
     const layer = activeLayer();
     if (!canEdit(layer)) return;
     activePointer = e.pointerId;
@@ -595,9 +657,13 @@
       opacity: st.opacity / 100,
       softness: isEraser ? st.softness / 100 : 0,
       pressure: state.pressure,
+      pressureMin: isEraser ? 0.3 : st.pmin / 100,
+      jitter: isEraser ? 0 : st.jitter / 100,
     };
+    strokeTaper = isEraser || Brushes.TYPES[state.brushType].noTaper ? 0 : Brushes.taperLength(st.size, st.taper);
+    strokeDist = 0;
     stroke = Brushes.createStroke(strokeOpts);
-    const first = { x: p.x, y: p.y, pressure: p.pressure };
+    const first = { x: p.x, y: p.y, pressure: p.pressure, d: 0, w: Brushes.taperAt(0, null, strokeTaper) };
     strokePts = [first];
     snapped = false;
     stroke.begin(first);
@@ -626,6 +692,8 @@
   function finishPointer(e) {
     if (e.pointerId !== activePointer) return;
     if (picking) { endPick(); return; }
+    if (selDraft) { activePointer = null; endSelect(); return; }
+    if (tfDrag) { activePointer = null; tfDrag = null; return; }
     activePointer = null;
     clearTimeout(holdTimer);
     if (!busy()) return;
@@ -637,6 +705,17 @@
     if (blendStroke) commitBlend();
     else {
       if (state.tool !== 'eraser') addRecent(state.color);
+      // Taper the end of the line: redraw the stroke now that we know where it ends.
+      if (strokeTaper && !snapped && strokePts.length > 1) {
+        bctx.setTransform(1, 0, 0, 1, 0, 0);
+        bctx.clearRect(0, 0, DOC_W, DOC_H);
+        const s2 = Brushes.createStroke(strokeOpts);
+        strokePts.forEach((q, i) => {
+          const pt = { x: q.x, y: q.y, pressure: q.pressure, w: Brushes.taperAt(q.d || 0, strokeDist, strokeTaper) };
+          if (i === 0) s2.begin(pt); else s2.moveTo(pt);
+        });
+        stroke = s2;
+      }
       stroke.end();
       commitStroke();
     }
@@ -688,7 +767,7 @@
   }
 
   stage.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.sidebar')) return;
+    if (e.target.closest('.sidebar, .transform-bar')) return;
     if (e.pointerType === 'pen') noticeStylus();
 
     if (e.pointerType === 'touch') {
@@ -702,12 +781,14 @@
         // A second finger means a gesture, not drawing. If the first finger
         // only just started a stroke, throw it away; otherwise keep it.
         if (picking) endPick(false);
+        if (selDraft) { selDraft = null; activePointer = null; drawSelOverlay(); }
+        if (tfDrag) { Object.assign(transform, tfDrag.start); tfDrag = null; activePointer = null; refreshTransform(); }
         if (activePointer !== null) {
           if (busy() && performance.now() - strokeStart > 300) finishPointer({ pointerId: activePointer });
           else abortStroke();
         }
         startGesture();
-      } else if (touches.size === 1 && state.fingerDraw) {
+      } else if (touches.size === 1 && (state.fingerDraw || state.tool === 'select' || state.tool === 'transform')) {
         startDrawing(e);
       } else if (touches.size === 1) {
         // Finger drawing is off: touch and hold to pick a color.
@@ -750,6 +831,8 @@
     updateCursor(e);
     if (e.pointerId !== activePointer) return;
     if (picking) { pickAt(e); return; }
+    if (selDraft) { extendSelect(e); return; }
+    if (tfDrag) { moveTransformDrag(e); return; }
     if (!busy()) return;
     if (snapped) return; // the shape is done; lift to keep it
     if (stroke && (!holdAt || Math.hypot(e.clientX - holdAt.x, e.clientY - holdAt.y) > 4)) armHold(e);
@@ -808,6 +891,12 @@
     strokeTarget = null;
     // An eraser stroke on an empty spot changes nothing.
     if (rect && !(s.composite === 'destination-out' && !celOf(layer, doc.frame))) {
+      if (selection) {
+        // Keep only the paint inside the selection.
+        bctx.globalCompositeOperation = 'destination-in';
+        bctx.drawImage(selection.mask, 0, 0);
+        bctx.globalCompositeOperation = 'source-over';
+      }
       const cel = ensureCel(layer, doc.frame);
       const ctx = cel.getContext('2d');
       const before = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
@@ -831,11 +920,470 @@
     strokeTarget = null;
     if (res) {
       const { rect, before } = res;
-      const after = cel.getContext('2d').getImageData(rect.x, rect.y, rect.w, rect.h);
+      const ctx = cel.getContext('2d');
+      const after = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
+      if (selection) {
+        // Put back everything outside the selection.
+        const m = selection.data, a = after.data, b = before.data;
+        for (let y = 0; y < rect.h; y++) {
+          for (let x = 0; x < rect.w; x++) {
+            const k = m[((rect.y + y) * DOC_W + rect.x + x) * 4 + 3] / 255;
+            if (k === 1) continue;
+            const i = (y * rect.w + x) * 4;
+            for (let c = 0; c < 4; c++) a[i + c] = b[i + c] + (a[i + c] - b[i + c]) * k;
+          }
+        }
+        ctx.putImageData(after, rect.x, rect.y);
+      }
       pushPixelStep('Blend', layer, cel, rect, before, after);
     }
     requestRender();
   }
+
+  // ---------------------------------------------------------------------------
+  // Selection: choose an area so changes only affect the inside
+  // ---------------------------------------------------------------------------
+  const selOverlay = $('#sel-overlay');
+  selOverlay.width = DOC_W;
+  selOverlay.height = DOC_H;
+  const soctx = selOverlay.getContext('2d');
+  // selection = { mask (canvas: opaque = selected), data (its pixels), polys (outlines), bounds }
+  let selection = null;
+  let selDraft = null; // the outline being drawn right now
+  let antsOffset = 0, antsTimer = null;
+
+  // The smallest rectangle around all non-transparent pixels.
+  function alphaBounds(data) {
+    let minX = DOC_W, minY = DOC_H, maxX = -1, maxY = -1;
+    for (let y = 0; y < DOC_H; y++) {
+      const row = y * DOC_W * 4;
+      for (let x = 0; x < DOC_W; x++) {
+        if (data[row + x * 4 + 3]) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          maxY = y;
+        }
+      }
+    }
+    return maxX < 0 ? null : { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+  }
+  function selectionFromMask(mask, polys) {
+    const data = mask.getContext('2d').getImageData(0, 0, DOC_W, DOC_H).data;
+    const bounds = alphaBounds(data);
+    return bounds ? { mask, data, polys, bounds } : null;
+  }
+  function selectionFromPolys(polys) {
+    const mask = makeCanvas(DOC_W, DOC_H);
+    const m = mask.getContext('2d');
+    m.fillStyle = '#000';
+    for (const poly of polys) {
+      m.beginPath();
+      poly.forEach((q, i) => (i ? m.lineTo(q.x, q.y) : m.moveTo(q.x, q.y)));
+      m.closePath();
+      m.fill();
+    }
+    return selectionFromMask(mask, polys);
+  }
+  function setSelection(sel) {
+    selection = sel;
+    if (selection && !antsTimer) {
+      antsTimer = setInterval(() => { antsOffset = (antsOffset + 1) % 12; drawSelOverlay(); }, 110);
+    } else if (!selection && antsTimer) {
+      clearInterval(antsTimer);
+      antsTimer = null;
+    }
+    drawSelOverlay();
+  }
+
+  // Marching ants around the selection, plus a light tint outside it.
+  function drawSelOverlay() {
+    soctx.setTransform(1, 0, 0, 1, 0, 0);
+    soctx.globalCompositeOperation = 'source-over';
+    soctx.clearRect(0, 0, DOC_W, DOC_H);
+    const zoom = (view.s * baseW) / DOC_W;
+    const outline = (polys, closed) => {
+      soctx.lineWidth = 1.5 / zoom;
+      soctx.beginPath();
+      for (const poly of polys) {
+        poly.forEach((q, i) => (i ? soctx.lineTo(q.x, q.y) : soctx.moveTo(q.x, q.y)));
+        if (closed) soctx.closePath();
+      }
+      soctx.setLineDash([]);
+      soctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      soctx.stroke();
+      soctx.setLineDash([6 / zoom, 6 / zoom]);
+      soctx.lineDashOffset = -antsOffset / zoom;
+      soctx.strokeStyle = '#1f2328';
+      soctx.stroke();
+      soctx.setLineDash([]);
+    };
+    if (transform && transform.polys) {
+      outline(transform.polys.map((poly) => poly.map(tfMap)), true);
+    } else if (selection) {
+      soctx.fillStyle = 'rgba(30,50,120,0.09)';
+      soctx.fillRect(0, 0, DOC_W, DOC_H);
+      soctx.globalCompositeOperation = 'destination-out';
+      soctx.drawImage(selection.mask, 0, 0);
+      soctx.globalCompositeOperation = 'source-over';
+      if (selection.polys) outline(selection.polys, true);
+    }
+    if (selDraft) {
+      const poly = draftPoly();
+      if (poly.length > 1) outline([poly], selDraft.mode === 'rect');
+    }
+  }
+
+  function beginSelect(e, p) {
+    activePointer = e.pointerId;
+    try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    selDraft = { mode: state.selectMode, pts: [p], start: p, end: p, sx: e.clientX, sy: e.clientY, far: 0 };
+    drawSelOverlay();
+  }
+  function extendSelect(e) {
+    const p = toDoc(e);
+    const d = selDraft;
+    d.far = Math.max(d.far, Math.hypot(e.clientX - d.sx, e.clientY - d.sy));
+    const last = d.pts[d.pts.length - 1];
+    if (Math.hypot(p.x - last.x, p.y - last.y) > 1.5) d.pts.push(p);
+    d.end = p;
+    drawSelOverlay();
+  }
+  function draftPoly() {
+    const d = selDraft;
+    if (d.mode === 'rect') {
+      return [d.start, { x: d.end.x, y: d.start.y }, d.end, { x: d.start.x, y: d.end.y }];
+    }
+    return d.pts;
+  }
+  function endSelect() {
+    const d = selDraft;
+    const poly = draftPoly();
+    selDraft = null;
+    if (d.far < 6) { setSelection(null); return; } // a tap clears the selection
+    const sel = selectionFromPolys([poly]);
+    setSelection(sel);
+    if (!sel) toast('Nothing was selected. Draw around an area.');
+  }
+
+  // Selection panel actions
+  function needSelection() {
+    if (!selection) { toast('Select an area first: choose the Select tool and draw around it.'); return false; }
+    return true;
+  }
+  $$('#select-modes button').forEach((b) => b.addEventListener('click', () => {
+    state.selectMode = b.dataset.mode;
+    saveSettings();
+    syncUI();
+  }));
+  $('#sel-all').addEventListener('click', () => {
+    setSelection(selectionFromPolys([[{ x: 0, y: 0 }, { x: DOC_W, y: 0 }, { x: DOC_W, y: DOC_H }, { x: 0, y: DOC_H }]]));
+    closePanels();
+  });
+  $('#sel-none').addEventListener('click', () => { setSelection(null); closePanels(); });
+  $('#sel-invert').addEventListener('click', () => {
+    if (!needSelection()) return;
+    const mask = makeCanvas(DOC_W, DOC_H);
+    const m = mask.getContext('2d');
+    m.fillRect(0, 0, DOC_W, DOC_H);
+    m.globalCompositeOperation = 'destination-out';
+    m.drawImage(selection.mask, 0, 0);
+    const outer = [{ x: 0, y: 0 }, { x: DOC_W, y: 0 }, { x: DOC_W, y: DOC_H }, { x: 0, y: DOC_H }];
+    setSelection(selectionFromMask(mask, (selection.polys || []).concat([outer])));
+    closePanels();
+  });
+  $('#sel-copy').addEventListener('click', () => {
+    if (!needSelection() || busy()) return;
+    const src = activeLayer();
+    const cel = celOf(src, doc.frame);
+    if (!cel) { toast(`"${src.name}" has nothing here to copy.`); return; }
+    if (doc.layers.length >= MAX_LAYERS) { toast(`You can have up to ${MAX_LAYERS} layers.`); return; }
+    const copy = copyCanvas(cel);
+    const c = copy.getContext('2d');
+    c.globalCompositeOperation = 'destination-in';
+    c.drawImage(selection.mask, 0, 0);
+    const layer = newLayer(src.name + ' (part)');
+    layer.static = src.static;
+    layer.cels.set(celKey(layer, doc.frame), copy);
+    addLayerStep('Copy selection', layer, layerIndex(src) + 1);
+    closePanels();
+    toast('Copied the selected part to a new layer. Use Transform to move it.');
+  });
+  $('#sel-fill').addEventListener('click', () => {
+    if (!needSelection()) return;
+    const layer = activeLayer();
+    if (!canEdit(layer)) return;
+    const r = selection.bounds;
+    fctx.setTransform(1, 0, 0, 1, 0, 0);
+    fctx.globalCompositeOperation = 'source-over';
+    fctx.clearRect(0, 0, DOC_W, DOC_H);
+    fctx.fillStyle = state.color;
+    fctx.fillRect(r.x, r.y, r.w, r.h);
+    fctx.globalCompositeOperation = 'destination-in';
+    fctx.drawImage(selection.mask, 0, 0);
+    fctx.globalCompositeOperation = 'source-over';
+    const cel = ensureCel(layer, doc.frame);
+    const ctx = cel.getContext('2d');
+    const before = ctx.getImageData(r.x, r.y, r.w, r.h);
+    ctx.drawImage(fillCanvas, 0, 0);
+    const after = ctx.getImageData(r.x, r.y, r.w, r.h);
+    pushPixelStep('Fill selection', layer, cel, r, before, after);
+    addRecent(state.color);
+    closePanels();
+    requestRender();
+  });
+  $('#sel-erase').addEventListener('click', () => {
+    if (!needSelection()) return;
+    closePanels();
+    clearLayer();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Transform: move, resize and rotate the selection (or the whole layer)
+  // ---------------------------------------------------------------------------
+  const ui = $('#ui-overlay');
+  const uctx = ui.getContext('2d');
+  let transform = null; // the part being transformed and where it is now
+  let tfDrag = null;    // the handle being dragged
+  let tfPrevTool = 'brush';
+  const tfBar = $('#transform-bar');
+
+  function sizeUI() {
+    ui.width = Math.round(stage.clientWidth * DPR);
+    ui.height = Math.round(stage.clientHeight * DPR);
+    drawUI();
+  }
+  // Drawing position -> position in the drawing area on screen.
+  function docToStage(x, y) {
+    const ux = (x * (baseW / DOC_W) - baseW / 2) * view.s, uy = (y * (baseH / DOC_H) - baseH / 2) * view.s;
+    const c = Math.cos(view.r), sn = Math.sin(view.r);
+    return { x: ux * c - uy * sn + view.tx + stage.clientWidth / 2, y: ux * sn + uy * c + view.ty + stage.clientHeight / 2 };
+  }
+  // Where a point of the original picture ends up after the transform.
+  function tfMap(q) {
+    const t = transform;
+    const lx = (q.x - t.ox) * t.sx, ly = (q.y - t.oy) * t.sy;
+    const c = Math.cos(t.rot), sn = Math.sin(t.rot);
+    return { x: t.cx + lx * c - ly * sn, y: t.cy + lx * sn + ly * c };
+  }
+  const tfLocalCorners = () => {
+    const hw = transform.w / 2, hh = transform.h / 2;
+    return [{ x: -hw, y: -hh }, { x: hw, y: -hh }, { x: hw, y: hh }, { x: -hw, y: hh }];
+  };
+  const tfCorners = () => tfLocalCorners().map((l) => tfMap({ x: transform.ox + l.x, y: transform.oy + l.y }));
+  function drawTransformed(ctx, img) {
+    const t = transform;
+    ctx.save();
+    ctx.translate(t.cx, t.cy);
+    ctx.rotate(t.rot);
+    ctx.scale(t.sx, t.sy);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, -t.w / 2, -t.h / 2);
+    ctx.restore();
+  }
+
+  // The box with handles, drawn on top in screen pixels so it's always easy to grab.
+  function drawUI() {
+    uctx.setTransform(1, 0, 0, 1, 0, 0);
+    uctx.clearRect(0, 0, ui.width, ui.height);
+    if (!transform) return;
+    uctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const C = tfCorners().map((q) => docToStage(q.x, q.y));
+    const mid = docToStage(transform.cx, transform.cy);
+    const top = { x: (C[0].x + C[1].x) / 2, y: (C[0].y + C[1].y) / 2 };
+    let dx = top.x - mid.x, dy = top.y - mid.y;
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len; dy /= len;
+    const rot = { x: top.x + dx * 30, y: top.y + dy * 30 };
+    uctx.beginPath();
+    C.forEach((q, i) => (i ? uctx.lineTo(q.x, q.y) : uctx.moveTo(q.x, q.y)));
+    uctx.closePath();
+    uctx.moveTo(top.x, top.y);
+    uctx.lineTo(rot.x, rot.y);
+    uctx.lineWidth = 3;
+    uctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    uctx.stroke();
+    uctx.lineWidth = 1.5;
+    uctx.strokeStyle = '#4f6df5';
+    uctx.stroke();
+    for (const q of C) {
+      uctx.beginPath();
+      uctx.arc(q.x, q.y, 8, 0, Math.PI * 2);
+      uctx.fillStyle = '#fff';
+      uctx.fill();
+      uctx.lineWidth = 2;
+      uctx.strokeStyle = '#4f6df5';
+      uctx.stroke();
+    }
+    uctx.beginPath();
+    uctx.arc(rot.x, rot.y, 8, 0, Math.PI * 2);
+    uctx.fillStyle = '#4f6df5';
+    uctx.fill();
+    uctx.lineWidth = 2;
+    uctx.strokeStyle = '#fff';
+    uctx.stroke();
+    transform.ui = { C, rot };
+  }
+  function refreshTransform() {
+    requestRender();
+    drawUI();
+    drawSelOverlay();
+  }
+
+  // Lift the selected part (or the whole layer) so it can be moved.
+  function startTransform() {
+    const layer = activeLayer();
+    if (!canEdit(layer)) return false;
+    const cel = celOf(layer, doc.frame);
+    if (!cel) { toast(`"${layer.name}" has nothing to move on this frame.`); return false; }
+    const lifted = copyCanvas(cel);
+    const lc = lifted.getContext('2d');
+    if (selection) {
+      lc.globalCompositeOperation = 'destination-in';
+      lc.drawImage(selection.mask, 0, 0);
+    }
+    const bb = alphaBounds(lc.getImageData(0, 0, DOC_W, DOC_H).data);
+    if (!bb) {
+      toast(selection ? 'There is nothing to move inside the selection on this layer.' : `"${layer.name}" has nothing to move on this frame.`);
+      return false;
+    }
+    const float = makeCanvas(bb.w, bb.h);
+    float.getContext('2d').drawImage(lifted, -bb.x, -bb.y);
+    const hole = copyCanvas(cel);
+    const hc = hole.getContext('2d');
+    if (selection) {
+      hc.globalCompositeOperation = 'destination-out';
+      hc.drawImage(selection.mask, 0, 0);
+    } else hc.clearRect(0, 0, DOC_W, DOC_H);
+    let maskFloat = null;
+    if (selection) {
+      maskFloat = makeCanvas(bb.w, bb.h);
+      maskFloat.getContext('2d').drawImage(selection.mask, -bb.x, -bb.y);
+    }
+    const ox = bb.x + bb.w / 2, oy = bb.y + bb.h / 2;
+    transform = {
+      layer, cel, frame: doc.frame, float, hole, maskFloat,
+      polys: selection ? selection.polys : null,
+      before: cel.getContext('2d').getImageData(0, 0, DOC_W, DOC_H),
+      ox, oy, w: bb.w, h: bb.h, cx: ox, cy: oy, sx: 1, sy: 1, rot: 0,
+    };
+    tfBar.hidden = false;
+    $('#tf-uniform').classList.toggle('on', state.tfUniform);
+    refreshTransform();
+    return true;
+  }
+
+  function endTransformUI() {
+    transform = null;
+    tfDrag = null;
+    tfBar.hidden = true;
+    refreshTransform();
+  }
+  function cancelTransform() {
+    if (!transform) return;
+    endTransformUI();
+  }
+  // Put the transformed part down for good (undoable).
+  function applyTransform() {
+    const t = transform;
+    if (!t) return;
+    const moved = t.cx !== t.ox || t.cy !== t.oy || t.sx !== 1 || t.sy !== 1 || t.rot !== 0;
+    if (moved) {
+      const ctx = t.cel.getContext('2d');
+      ctx.clearRect(0, 0, DOC_W, DOC_H);
+      ctx.drawImage(t.hole, 0, 0);
+      drawTransformed(ctx, t.float);
+      const after = ctx.getImageData(0, 0, DOC_W, DOC_H);
+      // The selection moves along with the picture (and moves back on undo).
+      const selBefore = selection;
+      let selAfter = selection;
+      if (t.maskFloat) {
+        const mask = makeCanvas(DOC_W, DOC_H);
+        drawTransformed(mask.getContext('2d'), t.maskFloat);
+        selAfter = selectionFromMask(mask, t.polys ? t.polys.map((poly) => poly.map(tfMap)) : null);
+      }
+      const frameNow = doc.frame;
+      doc.frame = t.frame;
+      pushPixelStep('Transform', t.layer, t.cel, { x: 0, y: 0, w: DOC_W, h: DOC_H }, t.before, after, {
+        undo() { setSelection(selBefore); },
+        redo() { setSelection(selAfter); },
+      });
+      doc.frame = frameNow;
+      setSelection(selAfter);
+    }
+    endTransformUI();
+  }
+
+  function beginTransformDrag(e) {
+    const t = transform;
+    const sr = stage.getBoundingClientRect();
+    const sp = { x: e.clientX - sr.left, y: e.clientY - sr.top };
+    const near = (q) => Math.hypot(sp.x - q.x, sp.y - q.y) < 24;
+    let mode = 'move', corner = -1;
+    if (t.ui && near(t.ui.rot)) mode = 'rotate';
+    else if (t.ui) t.ui.C.forEach((q, k) => { if (corner < 0 && near(q)) { mode = 'scale'; corner = k; } });
+    activePointer = e.pointerId;
+    try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    const p0 = toDoc(e);
+    tfDrag = { mode, corner, p0, start: { cx: t.cx, cy: t.cy, sx: t.sx, sy: t.sy, rot: t.rot } };
+    if (mode === 'scale') {
+      const L = tfLocalCorners();
+      tfDrag.local = L[corner];
+      tfDrag.oppLocal = L[(corner + 2) % 4];
+      tfDrag.anchor = tfCorners()[(corner + 2) % 4];
+    }
+    if (mode === 'rotate') tfDrag.a0 = Math.atan2(p0.y - t.cy, p0.x - t.cx);
+  }
+  function moveTransformDrag(e) {
+    const t = transform, d = tfDrag, s0 = d.start;
+    const p = toDoc(e);
+    if (d.mode === 'move') {
+      t.cx = s0.cx + (p.x - d.p0.x);
+      t.cy = s0.cy + (p.y - d.p0.y);
+    } else if (d.mode === 'rotate') {
+      let a = s0.rot + Math.atan2(p.y - s0.cy, p.x - s0.cx) - d.a0;
+      const q = Math.PI / 4, near = Math.round(a / q) * q;
+      if (Math.abs(a - near) < 0.05) a = near; // snap to straight and diagonal angles
+      t.rot = a;
+    } else {
+      // Resize from the dragged corner; the opposite corner stays put.
+      const A = d.anchor;
+      const c = Math.cos(s0.rot), sn = Math.sin(s0.rot);
+      const vx = (p.x - A.x) * c + (p.y - A.y) * sn, vy = -(p.x - A.x) * sn + (p.y - A.y) * c;
+      const dlx = d.local.x - d.oppLocal.x, dly = d.local.y - d.oppLocal.y;
+      let sx = vx / dlx, sy = vy / dly;
+      if (state.tfUniform) {
+        const kx = dlx * s0.sx, ky = dly * s0.sy;
+        const f = (vx * kx + vy * ky) / (kx * kx + ky * ky);
+        sx = s0.sx * f;
+        sy = s0.sy * f;
+      }
+      const minS = (v) => (v < 0 ? -1 : 1) * Math.max(0.02, Math.abs(v));
+      sx = minS(sx); sy = minS(sy);
+      t.sx = sx; t.sy = sy; t.rot = s0.rot;
+      const ox = d.oppLocal.x * sx, oy = d.oppLocal.y * sy;
+      t.cx = A.x - (ox * c - oy * sn);
+      t.cy = A.y - (ox * sn + oy * c);
+    }
+    refreshTransform();
+  }
+
+  // Transform bar buttons
+  $('#tf-uniform').addEventListener('click', () => {
+    state.tfUniform = !state.tfUniform;
+    $('#tf-uniform').classList.toggle('on', state.tfUniform);
+    saveSettings();
+  });
+  $('#tf-fliph').addEventListener('click', () => { if (transform) { transform.sx = -transform.sx; refreshTransform(); } });
+  $('#tf-flipv').addEventListener('click', () => { if (transform) { transform.sy = -transform.sy; refreshTransform(); } });
+  $('#tf-rot90').addEventListener('click', () => { if (transform) { transform.rot += Math.PI / 2; refreshTransform(); } });
+  $('#tf-reset').addEventListener('click', () => {
+    if (!transform) return;
+    Object.assign(transform, { cx: transform.ox, cy: transform.oy, sx: 1, sy: 1, rot: 0 });
+    refreshTransform();
+  });
+  $('#tf-cancel').addEventListener('click', () => { cancelTransform(); setTool(tfPrevTool); });
+  $('#tf-done').addEventListener('click', () => { applyTransform(); setTool(tfPrevTool); });
 
   // ---- Color fill: drag the color circle onto an area ----
   // The fill looks at everything you can see on this frame (all visible
@@ -853,7 +1401,10 @@
     const tol = (state.fillGap / 100) * 255;
     const i0 = (y0 * W + x0) * 4;
     const tr = src[i0], tg = src[i0 + 1], tb = src[i0 + 2], ta = src[i0 + 3];
+    const sel = selection ? selection.data : null;
+    if (sel && sel[i0 + 3] < 128) { toast('Tap inside the selection to fill it.'); return; }
     const same = (i) => {
+      if (sel && sel[i + 3] < 128) return false; // the selection's edge is a wall
       const a = src[i + 3];
       if (Math.abs(a - ta) > tol) return false;
       if (a < 8 && ta < 8) return true; // both see-through
@@ -899,7 +1450,8 @@
     const img = new ImageData(rect.w, rect.h);
     for (let y = 0; y < rect.h; y++) {
       for (let x = 0; x < rect.w; x++) {
-        if (!grown[(rect.y + y) * W + rect.x + x]) continue;
+        const gi = (rect.y + y) * W + rect.x + x;
+        if (!grown[gi] || (sel && sel[gi * 4 + 3] < 128)) continue;
         const o = (y * rect.w + x) * 4;
         img.data[o] = rgb[0]; img.data[o + 1] = rgb[1]; img.data[o + 2] = rgb[2]; img.data[o + 3] = 255;
       }
@@ -1048,6 +1600,7 @@
 
   function goFrame(frame) {
     if (!frame || busy()) return;
+    if (transform && frame !== transform.frame) applyTransform();
     doc.frame = frame;
     updateFrameUI();
     onionDirty = true;
@@ -1084,6 +1637,7 @@
   }
 
   function insertFrameStep(label, frame, saved) {
+    if (transform) applyTransform();
     if (doc.frames.length >= MAX_FRAMES) { toast(`You've reached the limit of ${MAX_FRAMES} frames.`); return; }
     const prev = doc.frame;
     const index = frameIndex() + 1;
@@ -1121,6 +1675,7 @@
     if (busy()) return;
     stopPlay();
     if (doc.frames.length <= 1) { toast('You need at least one frame.'); return; }
+    if (transform) applyTransform();
     const frame = doc.frame;
     const index = frameIndex();
     let saved = detachFrame(frame);
@@ -1141,6 +1696,7 @@
     to = clamp(to, 0, doc.frames.length - 1);
     if (busy() || from < 0 || to === from) return;
     stopPlay();
+    if (transform) applyTransform();
     const move = (a, b) => { doc.frames.splice(a, 1); doc.frames.splice(b, 0, frame); };
     move(from, to);
     doc.frame = frame;
@@ -1268,6 +1824,7 @@
 
   function startPlay() {
     if (playing || busy()) return;
+    if (transform) applyTransform();
     if (doc.frames.length < 2) { toast('Add more frames to play an animation.'); return; }
     closePanels();
     // "Once" starts from the beginning if you're on the last frame.
@@ -1667,6 +2224,14 @@
   // Toolbar and other panels
   // ---------------------------------------------------------------------------
   function setTool(t) {
+    if (t === state.tool) { syncUI(); return; }
+    if (state.tool === 'transform' && transform) applyTransform();
+    if (t === 'transform') {
+      const prev = state.tool;
+      if (!startTransform()) return;
+      tfPrevTool = prev === 'eyedropper' || prev === 'select' ? 'brush' : prev;
+    }
+    if (t === 'select' && !selection) toast('Draw around the area you want to select.', 2000);
     if (t === 'eyedropper' && state.tool !== 'eyedropper') state.prevTool = state.tool;
     state.tool = t;
     syncUI();
@@ -1674,8 +2239,9 @@
   // Tap a tool to choose it; tap it again to open its settings.
   $$('[data-tool]').forEach((b) => b.addEventListener('click', () => {
     const t = b.dataset.tool;
+    if (state.tool === t && t === 'transform') return;
     if (state.tool === t && t !== 'eyedropper') {
-      const panel = $('#panel-brush');
+      const panel = t === 'select' ? $('#panel-select') : $('#panel-brush');
       if (panel.hidden) openPanel(panel, b); else closePanels();
     } else {
       closePanels();
@@ -1757,6 +2323,7 @@
     $$('.btn.open').forEach((b) => b.classList.remove('open'));
   }
   function openPanel(panel, anchor) {
+    if (transform) applyTransform();
     closePanels();
     panel.hidden = false;
     anchor.classList.add('open');
@@ -1811,7 +2378,7 @@
   function drawBrushPreviews() {
     $$('.brush-type').forEach((b) => {
       const t = b.dataset.type;
-      Brushes.drawPreview(b.querySelector('canvas'), t, state.color, state.brushes[t].opacity / 100);
+      Brushes.drawPreview(b.querySelector('canvas'), t, state.color, state.brushes[t]);
     });
   }
 
@@ -1829,6 +2396,18 @@
   onInput('b-size', (el) => { state.brushes[state.brushType].size = sliderToSize(+el.value); });
   onInput('b-opacity', (el) => { state.brushes[state.brushType].opacity = +el.value; });
   onInput('b-smoothing', (el) => { state.brushes[state.brushType].smoothing = +el.value; });
+  onInput('b-taper', (el) => { state.brushes[state.brushType].taper = +el.value; });
+  onInput('b-pmin', (el) => { state.brushes[state.brushType].pmin = +el.value; });
+  onInput('b-jitter', (el) => { state.brushes[state.brushType].jitter = +el.value; });
+  ['b-taper', 'b-pmin', 'b-jitter'].forEach((id) => $('#' + id).addEventListener('change', () => {
+    if (!$('#panel-brush').hidden) drawBrushPreviews();
+  }));
+  $('#b-reset').addEventListener('click', () => {
+    Object.assign(state.brushes[state.brushType], Brushes.TYPES[state.brushType].defaults);
+    saveSettings();
+    syncUI();
+    drawBrushPreviews();
+  });
   onInput('b-pressure', (el) => { state.pressure = el.checked; });
   onInput('e-size', (el) => { state.eraser.size = sliderToSize(+el.value); });
   onInput('e-softness', (el) => { state.eraser.softness = +el.value; });
@@ -1891,6 +2470,15 @@
     $('#b-opacity-out').textContent = b.opacity + '%';
     $('#b-smoothing').value = b.smoothing;
     $('#b-smoothing-out').textContent = b.smoothing + '%';
+    $('#b-taper').value = b.taper;
+    $('#b-taper-out').textContent = b.taper + '%';
+    $('#b-taper-row').hidden = !!Brushes.TYPES[state.brushType].noTaper;
+    $('#b-pmin').value = b.pmin;
+    $('#b-pmin-out').textContent = b.pmin + '%';
+    $('#b-jitter').value = b.jitter;
+    $('#b-jitter-out').textContent = b.jitter + '%';
+    $$('#select-modes button').forEach((x) => x.classList.toggle('active', x.dataset.mode === state.selectMode));
+    stage.classList.toggle('moving', tool === 'transform');
     $('#b-pressure').checked = state.pressure;
 
     $('#e-size').value = sizeToSlider(state.eraser.size);
@@ -1921,7 +2509,7 @@
     $('#o-opacity-out').textContent = state.onion.opacity + '%';
 
     $('#color-swatch').style.background = state.color;
-    stage.classList.toggle('picking', tool === 'eyedropper');
+    stage.classList.toggle('picking', tool === 'eyedropper' || tool === 'select');
   }
 
   // ---------------------------------------------------------------------------
@@ -1933,6 +2521,8 @@
     const k = e.key.toLowerCase();
     if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
     if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+    if (mod && k === 'a') { e.preventDefault(); $('#sel-all').click(); return; }
+    if (mod && k === 'd') { e.preventDefault(); setSelection(null); return; }
     if (mod || e.altKey) return;
     if (k === ' ') {
       e.preventDefault();
@@ -1948,7 +2538,14 @@
     else if (k === '0') fitView();
     else if (k === '=' || k === '+') zoomBy(1.25);
     else if (k === '-') zoomBy(0.8);
-    else if (k === 'escape') closePanels();
+    else if (k === 'v') setTool('transform');
+    else if (k === 'l') setTool('select');
+    else if (k === 'enter' && transform) { applyTransform(); setTool(tfPrevTool); }
+    else if (k === 'escape') {
+      if ($$('.panel').some((x) => !x.hidden)) closePanels();
+      else if (transform) { cancelTransform(); setTool(tfPrevTool); }
+      else if (selection) setSelection(null);
+    }
     else if (k === '[' || k === ']') {
       const s = currentSettings();
       s.size = k === '['

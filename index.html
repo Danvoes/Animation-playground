@@ -29,6 +29,12 @@
       <button class="tb" data-tool="eyedropper" title="Pick a color from the drawing (I)">
         <svg viewBox="0 0 24 24"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3-3a2.1 2.1 0 0 1 3 3l-3 3 .5.5a1.4 1.4 0 0 1-2 2L11 6.5a1.4 1.4 0 0 1 2-2z"/></svg>
       </button>
+      <button class="tb" data-tool="select" title="Select an area (L). Tap again for selection options">
+        <svg viewBox="0 0 24 24"><path d="M7 21c-1.5 0-2.5-1-2.5-2.2 0-1.4 1.3-2.1 2.9-1.8"/><path d="M7.4 17C4.6 15.6 3 13.2 3 10.5 3 6.4 7 3 12 3s9 3.4 9 7.5-4 7.5-9 7.5c-1.1 0-2.2-.2-3.2-.5" stroke-dasharray="3 2.4"/></svg>
+      </button>
+      <button class="tb" data-tool="transform" title="Transform: move, resize or rotate (V)">
+        <svg viewBox="0 0 24 24"><path d="M5 9 2 12l3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/></svg>
+      </button>
       <span class="tb-sep"></span>
       <button class="tb" id="btn-layers" data-panel="panel-layers" title="Layers">
         <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
@@ -45,6 +51,18 @@
     <div id="canvas-wrap">
       <canvas id="canvas"></canvas>
       <canvas id="onion"></canvas>
+      <canvas id="sel-overlay"></canvas>
+    </div>
+    <canvas id="ui-overlay"></canvas>
+    <!-- Shown while transforming -->
+    <div class="transform-bar" id="transform-bar" hidden>
+      <button class="mini" id="tf-uniform" title="Keep the shape's proportions when resizing">Keep proportions</button>
+      <button class="mini" id="tf-fliph" title="Flip left to right">Flip ↔</button>
+      <button class="mini" id="tf-flipv" title="Flip upside down">Flip ↕</button>
+      <button class="mini" id="tf-rot90" title="Turn a quarter turn">Rotate 90°</button>
+      <button class="mini" id="tf-reset" title="Back to how it was">Reset</button>
+      <button class="mini" id="tf-cancel">Cancel</button>
+      <button class="mini primary" id="tf-done">Done</button>
     </div>
     <div id="cursor"></div>
 
@@ -108,7 +126,7 @@
   </footer>
 
   <!-- ===== Pop-out panel: brush / eraser settings ===== -->
-  <div class="panel" id="panel-brush" hidden>
+  <div class="panel panel-brushes" id="panel-brush" hidden>
     <section id="brush-section">
       <h2>Brush type</h2>
       <div class="brush-grid" id="brush-types"></div>
@@ -127,7 +145,24 @@
         <input type="range" id="b-smoothing" min="0" max="100">
         <output id="b-smoothing-out"></output>
       </div>
+      <h2 class="gap">Fine-tune</h2>
+      <div class="field" id="b-taper-row">
+        <label for="b-taper" title="How much the line thins out at its start and end">Taper</label>
+        <input type="range" id="b-taper" min="0" max="100">
+        <output id="b-taper-out"></output>
+      </div>
+      <div class="field">
+        <label for="b-pmin" title="How big the brush is when you press lightly with a stylus">Light touch</label>
+        <input type="range" id="b-pmin" min="0" max="100">
+        <output id="b-pmin-out"></output>
+      </div>
+      <div class="field">
+        <label for="b-jitter" title="Random size changes for a rougher, hand-made line">Jitter</label>
+        <input type="range" id="b-jitter" min="0" max="100">
+        <output id="b-jitter-out"></output>
+      </div>
       <label class="check"><input type="checkbox" id="b-pressure"> Stylus pressure changes the line</label>
+      <button class="mini wide" id="b-reset" style="margin-top:12px">Reset this brush</button>
     </section>
 
     <section id="blend-section" hidden>
@@ -207,6 +242,26 @@
         <button class="mini" id="l-rename" title="Rename the selected layer">Rename</button>
       </div>
     </div>
+  </div>
+
+  <!-- ===== Pop-out panel: selection ===== -->
+  <div class="panel" id="panel-select" hidden>
+    <h2>Selection</h2>
+    <div class="segmented two" id="select-modes">
+      <button data-mode="lasso" title="Draw around the area">Freehand</button>
+      <button data-mode="rect" title="Drag a box">Rectangle</button>
+    </div>
+    <div class="mini-grid">
+      <button class="mini" id="sel-all">Select all</button>
+      <button class="mini" id="sel-none">Deselect</button>
+      <button class="mini" id="sel-invert">Invert</button>
+      <button class="mini" id="sel-copy">Copy to new layer</button>
+      <button class="mini" id="sel-fill">Fill with color</button>
+      <button class="mini danger" id="sel-erase">Erase inside</button>
+    </div>
+    <p class="hint">Draw around an area to select it; tap the canvas to deselect. While something is
+      selected, drawing, erasing, blending and filling only change the inside. Use Transform to move,
+      resize or rotate it.</p>
   </div>
 
   <!-- ===== Pop-out panel: menu ===== -->

@@ -419,3 +419,32 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
   background: var(--accent); pointer-events: none;
 }
 .frame-cell .hold { font-weight: 400; opacity: .8; }
+
+/* ============ Selection, transform, brush studio ============ */
+#sel-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#ui-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 2; }
+.transform-bar {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 4;
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
+  max-width: calc(100% - 20px);
+  padding: 8px; border-radius: 12px;
+  background: var(--panel-glass); border: 1px solid var(--border); box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  cursor: default;
+}
+.transform-bar[hidden] { display: none; }
+.mini.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.mini.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mini.primary:hover { filter: brightness(1.08); background: var(--accent); }
+.segmented.two { grid-template-columns: 1fr 1fr; }
+.panel-brushes { width: 340px; }
+.panel-brushes .brush-grid { grid-template-columns: repeat(3, 1fr); }
+.panel-brushes .brush-type { font-size: 11px; padding: 5px; }
+.panel-brushes .brush-type canvas { height: 32px; }
+@media (max-width: 480px) {
+  .zoom-readout { display: none; }
+  .tb { width: 36px; height: 40px; }
+  .tb svg { width: 20px; height: 20px; }
+  .tb-sep { display: none; }
+}
+#stage.moving { cursor: move; }

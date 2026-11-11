@@ -7,22 +7,32 @@
  * ends, the app blends that buffer onto the drawing using the stroke's
  * `opacity` and `composite` (blend) settings. This keeps semi-transparent
  * brushes even within a single stroke.
+ *
+ * Every brush has these settings:
+ *   size, opacity, smoothing,
+ *   taper  - how much the line thins out at its start and end (0-100)
+ *   pmin   - how big the brush is at the lightest stylus pressure, in % (0-100)
+ *   jitter - random size changes for a rougher, hand-made look (0-100)
  */
 (function () {
   'use strict';
 
   const TYPES = {
-    pen:         { label: 'Pen',         defaults: { size: 6,  opacity: 100, smoothing: 35 } },
-    pencil:      { label: 'Pencil',      defaults: { size: 5,  opacity: 90,  smoothing: 20 } },
-    marker:      { label: 'Marker',      defaults: { size: 24, opacity: 55,  smoothing: 30 } },
-    soft:        { label: 'Soft brush',  defaults: { size: 60, opacity: 70,  smoothing: 20 } },
-    airbrush:    { label: 'Airbrush',    defaults: { size: 70, opacity: 80,  smoothing: 10 } },
-    calligraphy: { label: 'Calligraphy', defaults: { size: 18, opacity: 100, smoothing: 45 } },
+    pen:         { label: 'Pen',         defaults: { size: 6,  opacity: 100, smoothing: 35, taper: 20, pmin: 15, jitter: 0 } },
+    ink:         { label: 'Ink',         defaults: { size: 9,  opacity: 100, smoothing: 45, taper: 70, pmin: 5,  jitter: 0 } },
+    pencil:      { label: 'Pencil',      defaults: { size: 5,  opacity: 90,  smoothing: 20, taper: 10, pmin: 40, jitter: 0 } },
+    charcoal:    { label: 'Charcoal',    defaults: { size: 22, opacity: 85,  smoothing: 15, taper: 15, pmin: 50, jitter: 15 } },
+    crayon:      { label: 'Crayon',      defaults: { size: 14, opacity: 95,  smoothing: 15, taper: 0,  pmin: 60, jitter: 5 } },
+    marker:      { label: 'Marker',      defaults: { size: 24, opacity: 55,  smoothing: 30, taper: 0,  pmin: 60, jitter: 0 } },
+    soft:        { label: 'Soft brush',  defaults: { size: 60, opacity: 70,  smoothing: 20, taper: 0,  pmin: 35, jitter: 0 } },
+    watercolor:  { label: 'Watercolor',  defaults: { size: 50, opacity: 70,  smoothing: 25, taper: 0,  pmin: 50, jitter: 10 } },
+    airbrush:    { label: 'Airbrush',    defaults: { size: 70, opacity: 80,  smoothing: 10, taper: 0,  pmin: 100, jitter: 0 }, noTaper: true },
+    splatter:    { label: 'Splatter',    defaults: { size: 40, opacity: 90,  smoothing: 0,  taper: 0,  pmin: 60, jitter: 0 }, noTaper: true },
+    calligraphy: { label: 'Calligraphy', defaults: { size: 18, opacity: 100, smoothing: 45, taper: 20, pmin: 30, jitter: 0 } },
+    glow:        { label: 'Glow',        defaults: { size: 16, opacity: 100, smoothing: 35, taper: 20, pmin: 40, jitter: 0 } },
   };
-  const ORDER = ['pen', 'pencil', 'marker', 'soft', 'airbrush', 'calligraphy'];
-
-  // How thin each brush gets at the lightest stylus pressure (1 = no change).
-  const PRESSURE_MIN = { pen: 0.15, pencil: 0.4, marker: 0.6, soft: 0.35, airbrush: 1, calligraphy: 0.3, eraser: 0.3 };
+  const ORDER = ['pen', 'ink', 'pencil', 'charcoal', 'crayon', 'marker', 'soft', 'watercolor',
+    'airbrush', 'splatter', 'calligraphy', 'glow'];
 
   const STAMP = 128;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -30,61 +40,89 @@
     x: a.x + (b.x - a.x) * t,
     y: a.y + (b.y - a.y) * t,
     pressure: a.pressure + (b.pressure - a.pressure) * t,
+    w: (a.w != null ? a.w : 1) + ((b.w != null ? b.w : 1) - (a.w != null ? a.w : 1)) * t,
   });
   function makeCanvas(w, h) {
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     return c;
   }
-  // Random number with a bell-curve spread (used by the airbrush).
+  // Random number with a bell-curve spread.
   function gauss() {
     let u = 0, v = 0;
     while (!u) u = Math.random();
     while (!v) v = Math.random();
     return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
   }
+  const rgba = (rgb, a) => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
 
   // A round dab that fades out toward its edge. hardness 0 = very soft, 1 = crisp.
   function softStamp(rgb, hardness) {
     const c = makeCanvas(STAMP, STAMP);
     const g = c.getContext('2d');
     const r = STAMP / 2;
-    const col = `${rgb[0]},${rgb[1]},${rgb[2]}`;
     const h = clamp(hardness, 0, 0.98);
     const grad = g.createRadialGradient(r, r, 0, r, r, r);
-    grad.addColorStop(0, `rgba(${col},1)`);
-    grad.addColorStop(h, `rgba(${col},1)`);
-    grad.addColorStop(h + (1 - h) * 0.5, `rgba(${col},0.4)`);
-    grad.addColorStop(1, `rgba(${col},0)`);
+    grad.addColorStop(0, rgba(rgb, 1));
+    grad.addColorStop(h, rgba(rgb, 1));
+    grad.addColorStop(h + (1 - h) * 0.5, rgba(rgb, 0.4));
+    grad.addColorStop(1, rgba(rgb, 0));
     g.fillStyle = grad;
     g.fillRect(0, 0, STAMP, STAMP);
     return c;
   }
 
-  // A speckled dab that looks like graphite grain.
-  function grainStamp(rgb) {
-    const S = 64, r = S / 2;
+  // A watercolor dab: pale in the middle, darker toward the rim, like a drying puddle.
+  function wetStamp(rgb) {
+    const c = makeCanvas(STAMP, STAMP);
+    const g = c.getContext('2d');
+    const r = STAMP / 2;
+    const grad = g.createRadialGradient(r, r, 0, r, r, r);
+    grad.addColorStop(0, rgba(rgb, 0.3));
+    grad.addColorStop(0.65, rgba(rgb, 0.42));
+    grad.addColorStop(0.88, rgba(rgb, 0.75));
+    grad.addColorStop(1, rgba(rgb, 0));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, STAMP, STAMP);
+    return c;
+  }
+
+  /**
+   * A speckled dab for dry media.
+   *   S: texture resolution (lower = coarser grain), keep: how much of it is filled,
+   *   streak: stretch the grain sideways (crayon on paper).
+   */
+  function grainStamp(rgb, S, keep, streak) {
+    const r = S / 2;
+    const noise = makeCanvas(S, streak ? Math.max(4, S / 4) : S);
+    const ng = noise.getContext('2d');
+    const img = ng.createImageData(noise.width, noise.height);
+    for (let i = 0; i < img.data.length; i += 4) {
+      if (Math.random() > keep) continue;
+      img.data[i] = rgb[0]; img.data[i + 1] = rgb[1]; img.data[i + 2] = rgb[2];
+      img.data[i + 3] = (0.5 + 0.5 * Math.random()) * 255;
+    }
+    ng.putImageData(img, 0, 0);
     const c = makeCanvas(S, S);
     const g = c.getContext('2d');
-    const img = g.createImageData(S, S);
-    for (let y = 0; y < S; y++) {
-      for (let x = 0; x < S; x++) {
-        const d = Math.hypot(x + 0.5 - r, y + 0.5 - r) / r;
-        if (d > 1 || Math.random() > 0.7) continue;
-        const fall = d < 0.6 ? 1 : (1 - d) / 0.4;
-        const i = (y * S + x) * 4;
-        img.data[i] = rgb[0]; img.data[i + 1] = rgb[1]; img.data[i + 2] = rgb[2];
-        img.data[i + 3] = (0.5 + 0.5 * Math.random()) * fall * 255;
-      }
-    }
-    g.putImageData(img, 0, 0);
+    g.imageSmoothingEnabled = false;
+    g.drawImage(noise, 0, 0, S, S);
+    // Fade toward the edge of the round dab.
+    const fade = g.createRadialGradient(r, r, 0, r, r, r);
+    fade.addColorStop(0, 'rgba(0,0,0,1)');
+    fade.addColorStop(0.6, 'rgba(0,0,0,1)');
+    fade.addColorStop(1, 'rgba(0,0,0,0)');
+    g.globalCompositeOperation = 'destination-in';
+    g.fillStyle = fade;
+    g.fillRect(0, 0, S, S);
     return c;
   }
 
   /**
    * Start a new stroke.
-   * o = { type, ctx, color, size, opacity (0-1), softness (0-1, eraser), pressure (bool) }
-   * Points passed to begin()/moveTo() look like { x, y, pressure (0-1) }.
+   * o = { type, ctx, color, size, opacity (0-1), softness (0-1, eraser), pressure (bool),
+   *       pressureMin (0-1, size at lightest pressure), jitter (0-1) }
+   * Points passed to begin()/moveTo() look like { x, y, pressure (0-1), w (0-1, taper) }.
    */
   function createStroke(o) {
     const ctx = o.ctx;
@@ -92,9 +130,11 @@
     const rgb = Color.hexToRgb(o.color) || [0, 0, 0];
     const css = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     const usePressure = o.pressure !== false;
-    const pmin = PRESSURE_MIN[type] != null ? PRESSURE_MIN[type] : 0.3;
+    const pmin = o.pressureMin != null ? clamp(o.pressureMin, 0, 1) : 0.3;
+    const jitter = clamp(o.jitter || 0, 0, 1);
     const pf = (p) => (usePressure ? pmin + (1 - pmin) * clamp(p.pressure != null ? p.pressure : 1, 0, 1) : 1);
-    const widthAt = (p) => Math.max(0.5, o.size * pf(p));
+    const jit = () => (jitter ? 1 - jitter * 0.7 * Math.random() : 1);
+    const widthAt = (p) => Math.max(0.5, o.size * pf(p) * (p.w != null ? p.w : 1) * jit());
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
@@ -149,8 +189,20 @@
       stroke.begin = (p) => { last = p; dab(p); need = spacingOf(p); };
       stroke.moveTo = (p) => { walk(last, p, spacingOf, dab); last = p; };
     }
+    // Draw an image centered on (x, y), w wide, turned by angle.
+    function stampAt(img, x, y, w, angle) {
+      if (angle) {
+        const c = Math.cos(angle), s = Math.sin(angle);
+        ctx.setTransform(c, s, -s, c, x, y);
+        ctx.drawImage(img, -w / 2, -w / 2, w, w);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      } else {
+        ctx.drawImage(img, x - w / 2, y - w / 2, w, w);
+      }
+      grow(x, y, w / 2);
+    }
 
-    if (type === 'pen' || type === 'marker') {
+    if (type === 'pen' || type === 'ink' || type === 'marker') {
       // Smooth solid line. The marker blends with "multiply", so overlapping
       // strokes get darker, like real marker ink.
       if (type === 'marker') stroke.composite = 'multiply';
@@ -177,18 +229,24 @@
         grow(p.x, p.y, w / 2);
         last = p;
       };
-    } else if (type === 'pencil') {
-      const stamps = [grainStamp(rgb), grainStamp(rgb), grainStamp(rgb), grainStamp(rgb)];
+    } else if (type === 'pencil' || type === 'charcoal' || type === 'crayon') {
+      // Dry media: grainy dabs. Charcoal is coarse and scattered;
+      // crayon has streaky texture that keeps one direction, like paper grain.
+      const look = {
+        pencil:   { S: 64, keep: 0.7,  spacing: 0.28, alpha: 0.5,  scatter: 0,    turn: true },
+        charcoal: { S: 28, keep: 0.5,  spacing: 0.2,  alpha: 0.45, scatter: 0.15, turn: true },
+        crayon:   { S: 48, keep: 0.55, spacing: 0.2,  alpha: 0.6,  scatter: 0.04, turn: false },
+      }[type];
+      const stamps = [0, 1, 2, 3].map(() => grainStamp(rgb, look.S, look.keep, type === 'crayon'));
+      const fixedAngle = Math.random() * Math.PI;
       useStamps(
-        (p) => Math.max(0.6, widthAt(p) * 0.28),
+        (p) => Math.max(0.6, widthAt(p) * look.spacing),
         (p) => {
           const w = widthAt(p);
-          const a = Math.random() * Math.PI * 2, c = Math.cos(a), s = Math.sin(a);
-          ctx.globalAlpha = 0.5 * (usePressure ? 0.4 + 0.6 * clamp(p.pressure, 0, 1) : 1);
-          ctx.setTransform(c, s, -s, c, p.x, p.y);
-          ctx.drawImage(stamps[(Math.random() * 4) | 0], -w / 2, -w / 2, w, w);
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          grow(p.x, p.y, w / 2);
+          const sc = look.scatter * w;
+          ctx.globalAlpha = look.alpha * (usePressure ? 0.4 + 0.6 * clamp(p.pressure, 0, 1) : 1);
+          stampAt(stamps[(Math.random() * 4) | 0], p.x + gauss() * sc, p.y + gauss() * sc, w,
+            look.turn ? Math.random() * Math.PI * 2 : fixedAngle);
         }
       );
     } else if (type === 'soft' || type === 'eraser') {
@@ -200,12 +258,55 @@
       useStamps(
         (p) => Math.max(0.75, widthAt(p) * spacing),
         (p) => {
-          const w = widthAt(p);
           ctx.globalAlpha = flow;
-          ctx.drawImage(stamp, p.x - w / 2, p.y - w / 2, w, w);
-          grow(p.x, p.y, w / 2);
+          stampAt(stamp, p.x, p.y, widthAt(p), 0);
         }
       );
+    } else if (type === 'watercolor') {
+      // Rim-dark dabs build up darker edges along the stroke. Multiply lets
+      // overlapping washes mix like real paint.
+      stroke.composite = 'multiply';
+      const stamp = wetStamp(rgb);
+      useStamps(
+        (p) => Math.max(0.75, widthAt(p) * 0.03),
+        (p) => {
+          ctx.globalAlpha = 0.04;
+          // A tiny wobble hides the individual dabs.
+          stampAt(stamp, p.x + gauss() * 0.6, p.y + gauss() * 0.6, widthAt(p), 0);
+        }
+      );
+    } else if (type === 'glow') {
+      // A soft halo with a bright core.
+      const halo = softStamp(rgb, 0);
+      const light = [0, 1, 2].map((i) => Math.round(rgb[i] + (255 - rgb[i]) * 0.65));
+      const core = softStamp(light, 0.7);
+      useStamps(
+        (p) => Math.max(0.75, widthAt(p) * 0.12),
+        (p) => {
+          const w = widthAt(p);
+          ctx.globalAlpha = 0.07;
+          stampAt(halo, p.x, p.y, w * 2.6, 0);
+          ctx.globalAlpha = 0.9;
+          stampAt(core, p.x, p.y, w * 0.55, 0);
+        }
+      );
+    } else if (type === 'splatter') {
+      // Random drops of different sizes scattered around the line.
+      ctx.fillStyle = css;
+      const drops = (p) => {
+        const w = widthAt(p);
+        const n = 2 + ((Math.random() * 4) | 0);
+        for (let i = 0; i < n; i++) {
+          const r = w * (0.03 + Math.pow(Math.random(), 3) * 0.25);
+          const x = p.x + gauss() * w * 0.6, y = p.y + gauss() * w * 0.6;
+          ctx.globalAlpha = 0.6 + 0.4 * Math.random();
+          ctx.beginPath();
+          ctx.arc(x, y, Math.max(0.5, r), 0, Math.PI * 2);
+          ctx.fill();
+          grow(x, y, r);
+        }
+      };
+      useStamps((p) => Math.max(2, widthAt(p) * 0.6), drops);
     } else if (type === 'airbrush') {
       // Sprays fine dots. Keeps spraying while you hold still.
       stroke.needsTick = true;
@@ -272,37 +373,65 @@
     return stroke;
   }
 
-  // Sample sizes used for the little previews in the brush panel.
-  const PREVIEW_SIZE = { pen: 3, pencil: 4, marker: 10, soft: 14, airbrush: 18, calligraphy: 8 };
+  /**
+   * Taper: how wide (0-1) the line is at distance d along a stroke of length L.
+   * Used by the app for live strokes and by the previews below.
+   */
+  function taperAt(d, L, T) {
+    if (!T) return 1;
+    const start = 0.12 + 0.88 * Math.min(1, d / T);
+    const end = L == null ? 1 : 0.12 + 0.88 * Math.min(1, Math.max(0, L - d) / T);
+    return Math.min(start, end);
+  }
+  // Taper length in pixels for a given brush size and taper setting (0-100).
+  const taperLength = (size, taper) => (taper / 100) * (40 + size * 4);
 
-  /** Draw a sample squiggle of a brush type into a small canvas. */
-  function drawPreview(cv, type, color, opacity) {
+  // Sample sizes used for the little previews in the brush panel.
+  const PREVIEW_SIZE = {
+    pen: 3, ink: 4, pencil: 4, charcoal: 9, crayon: 7, marker: 10, soft: 14, watercolor: 16,
+    airbrush: 18, splatter: 14, calligraphy: 8, glow: 6,
+  };
+
+  /** Draw a sample squiggle of a brush type into a small canvas. s = that brush's settings. */
+  function drawPreview(cv, type, color, s) {
+    s = s || TYPES[type].defaults;
     const dpr = Math.max(1, window.devicePixelRatio || 1);
-    const W = cv.clientWidth || 120, H = cv.clientHeight || 36;
+    const W = cv.clientWidth || 90, H = cv.clientHeight || 34;
     cv.width = Math.round(W * dpr);
     cv.height = Math.round(H * dpr);
     const buf = makeCanvas(cv.width, cv.height);
-    const s = createStroke({
-      type, ctx: buf.getContext('2d'), color,
-      size: PREVIEW_SIZE[type] * dpr, opacity, softness: 0, pressure: true,
+    const size = PREVIEW_SIZE[type] * dpr;
+    const st = createStroke({
+      type, ctx: buf.getContext('2d'), color, size,
+      opacity: s.opacity / 100, softness: 0, pressure: true,
+      pressureMin: s.pmin / 100, jitter: s.jitter / 100,
     });
     const N = 48;
+    const pts = [];
     for (let i = 0; i <= N; i++) {
       const t = i / N;
-      const p = {
-        x: (10 + t * (W - 20)) * dpr,
+      pts.push({
+        x: (8 + t * (W - 16)) * dpr,
         y: (H / 2 + Math.sin(t * Math.PI * 2) * H * 0.22) * dpr,
         pressure: 0.25 + 0.75 * Math.sin(t * Math.PI),
-      };
-      if (i === 0) s.begin(p); else s.moveTo(p);
+      });
     }
-    s.end();
+    let L = 0;
+    for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    const T = TYPES[type].noTaper ? 0 : (s.taper / 100) * L * 0.35;
+    let d = 0;
+    pts.forEach((p, i) => {
+      if (i) d += Math.hypot(p.x - pts[i - 1].x, p.y - pts[i - 1].y);
+      p.w = taperAt(d, L, T);
+      if (i === 0) st.begin(p); else st.moveTo(p);
+    });
+    st.end();
     const g = cv.getContext('2d');
     g.clearRect(0, 0, cv.width, cv.height);
-    g.globalAlpha = s.opacity;
-    g.globalCompositeOperation = s.composite === 'multiply' ? 'source-over' : s.composite;
+    g.globalAlpha = st.opacity;
+    g.globalCompositeOperation = st.composite === 'multiply' ? 'source-over' : st.composite;
     g.drawImage(buf, 0, 0);
   }
 
-  window.Brushes = { TYPES, ORDER, createStroke, drawPreview };
+  window.Brushes = { TYPES, ORDER, createStroke, drawPreview, taperAt, taperLength };
 })();
