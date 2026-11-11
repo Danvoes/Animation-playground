@@ -50,6 +50,29 @@ Sound plays with the animation in **Loop** and **Once** modes, perfectly in step
 again each time round). The frame thumbnails show a small waveform, so you can see where words or
 beats land. Sounds are saved with your project.
 
+## Rigging (puppet animation)
+
+Build a character from separate parts joined at joints, pose it on a few frames, and let
+Playground animate the frames in between.
+
+1. **Draw the parts** of your character (head, body, upper arm, lower arm…) a little apart.
+2. **Make parts:** circle one part with **Select**, tap the **Rig** tool twice to open
+   *Puppet parts*, and tap **Make a part** (give it a name). It moves onto a "Puppet" layer and
+   into your parts library. Repeat for every part.
+3. **Set up joints** (Rig tool → *Set up joints*): tap a part, drag its dot onto the joint
+   (for example the shoulder), tap **Attach to…**, then tap the part it hangs from.
+   You can also drag parts into place, change their order (Forward/Back) or remove them.
+4. **Pose** (Rig tool → *Pose*): drag a part to bend it at its joint; drag the main part to move
+   the whole puppet (round handle = turn, square handle = size). Posing a frame makes it a
+   **key pose** (◆ in the frame strip).
+5. **In-betweens:** pose a later frame too. Every frame between two key poses moves smoothly by
+   itself (turn **Smooth** off for an even, mechanical speed). Need more in-betweens? *Puppet parts*
+   → **Add frames**.
+6. **Edit a part's drawing** once (*Set up joints* → select it → **Edit drawing**) and it changes on
+   every frame where it's used.
+
+Tap a part in the *Puppet parts* library to add another copy of it to the puppet.
+
 ## Timing
 
 - Every frame in the strip shows the **time it starts** (for example `0.50s`), based on the speed
@@ -85,7 +108,8 @@ Firefox (plays in browsers, VLC and on YouTube).
 
 ## The screen
 
-- **Top bar, right:** Brush, Blend, Eraser, Pick color, Select, Transform, Layers, Color.
+- **Top bar, right:** Brush, Blend, Eraser, Pick color, Select, Transform, Rig, Layers, Color.
+  (On phones, Pick color lives in the Color panel; you can also touch and hold.)
   Tap a tool to choose it; **tap it again** to open its settings.
 - **Top bar, left:** the menu (project, insert image, view, touch settings, gestures, clear layer),
   Export, the project name with its save status, and the zoom level (tap it to fit the canvas).
@@ -154,7 +178,7 @@ Firefox (plays in browsers, VLC and on YouTube).
 | Ctrl+Z (Cmd+Z on Mac) | Undo |
 | Ctrl+Y or Ctrl+Shift+Z | Redo |
 | B / E / S / I | Brush / Eraser / Blend / Pick color |
-| L / V | Select / Transform |
+| L / V / R | Select / Transform / Rig |
 | Ctrl+A / Ctrl+D | Select all / Deselect |
 | Enter | Finish a transform |
 | [ and ] | Smaller / bigger brush |
@@ -177,6 +201,7 @@ Firefox (plays in browsers, VLC and on YouTube).
 | `js/history.js` | Undo / redo |
 | `js/storage.js` | Saving in the browser, and project files |
 | `js/audio.js` | Sound: decoding, waveforms and in-sync playback |
+| `js/rig.js` | Rigging: joints, poses and automatic in-betweens |
 
 ## Ideas for later
 

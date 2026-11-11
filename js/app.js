@@ -70,7 +70,7 @@
   // ---------------------------------------------------------------------------
   // The project ("document")
   // ---------------------------------------------------------------------------
-  const doc = { layers: [], frames: [], active: null, frame: null, fps: 12 };
+  const doc = { layers: [], frames: [], active: null, frame: null, fps: 12, parts: new Map() };
   let layerCounter = 0, layerIds = 0, frameIds = 0;
 
   function newLayer(name) {
@@ -100,7 +100,8 @@
   }
 
   const celKey = (layer, frame) => (layer.static ? 'static' : frame.id);
-  const celOf = (layer, frame) => layer.cels.get(celKey(layer, frame)) || null;
+  // Puppet layers don't store pictures: their picture is drawn from the pose.
+  const celOf = (layer, frame) => (layer.rig ? rigCel(layer, frame) : layer.cels.get(celKey(layer, frame)) || null);
   function ensureCel(layer, frame) {
     const key = celKey(layer, frame);
     let c = layer.cels.get(key);
@@ -132,6 +133,7 @@
     else { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H); }
     for (const layer of doc.layers) {
       if (!layer.visible || (opts.skipStatic && layer.static)) continue;
+      if (opts.only && layer !== opts.only) continue;
       const src = opts.override && opts.override.layer === layer ? opts.override.canvas : celOf(layer, frame);
       if (!src) continue;
       ctx.globalAlpha = layer.opacity;
@@ -179,6 +181,8 @@
     exportSound: saved.exportSound !== false,
     showTimes: saved.showTimes !== false,
     timelapse: saved.timelapse !== false,
+    rigMode: saved.rigMode === 'setup' ? 'setup' : 'pose',
+    rigRemove: saved.rigRemove !== false,
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
@@ -193,7 +197,7 @@
       quickShape: state.quickShape, fillGap: state.fillGap, playMode: state.playMode,
       selectMode: state.selectMode, tfUniform: state.tfUniform,
       exportSize: state.exportSize, exportLoops: state.exportLoops, exportSound: state.exportSound,
-      showTimes: state.showTimes, timelapse: state.timelapse,
+      showTimes: state.showTimes, timelapse: state.timelapse, rigMode: state.rigMode, rigRemove: state.rigRemove,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -221,10 +225,14 @@
     tlSchedule();
   };
 
-  const busy = () => !!(stroke || blendStroke);
+  const busy = () => !!(stroke || blendStroke || rigDrag);
 
   function undo() {
     if (transform) { cancelTransform(); return; } // undo while transforming = cancel it
+    if (partEdit && history.undoStack.length <= partEdit.histLen) {
+      toast('Tap Done or Cancel to finish editing the part first.');
+      return;
+    }
     if (!busy()) { stopPlay(); afterHistory(history.undo()); }
   }
   function redo() {
@@ -249,6 +257,10 @@
 
   // Checks before changing a layer's pixels.
   function canEdit(layer) {
+    if (layer.rig) {
+      toast(`"${layer.name}" is a puppet layer: pose it with the Rig tool, or pick another layer to draw on.`);
+      return false;
+    }
     if (layer.locked) { toast(`"${layer.name}" is locked. Unlock it in the Layers panel to draw on it.`); return false; }
     if (!layer.visible) { toast(`"${layer.name}" is hidden. Show it in the Layers panel to draw on it.`); return false; }
     return true;
@@ -348,7 +360,9 @@
       drawTransformed(sctx, transform.float);
       override = { layer: transform.layer, canvas: scratch };
     }
-    drawFrame(dctx, doc.frame, { override });
+    restView = true; // puppets show unposed while setting up joints
+    drawFrame(dctx, doc.frame, { override, only: partEdit ? partEdit.layer : null });
+    restView = false;
     if (onionDirty) drawOnion();
 
     if (stroke && stroke.needsTick) requestRender(); // keep the airbrush spraying
@@ -366,7 +380,7 @@
     octx.globalAlpha = 1;
     octx.clearRect(0, 0, onionCanvas.width, onionCanvas.height);
     const o = state.onion;
-    if (!o.enabled || playing) return;
+    if (!o.enabled || playing || partEdit) return;
     const idx = frameIndex();
     const W = tint.width, H = tint.height;
     const ghost = (frame, color, alpha) => {
@@ -476,7 +490,7 @@
   // The circle that shows your brush size under the mouse or stylus.
   function updateCursor(e) {
     if (e.pointerType === 'touch' || state.tool === 'eyedropper' || state.tool === 'select' ||
-        state.tool === 'transform' || playing || gesture ||
+        state.tool === 'transform' || state.tool === 'rig' || playing || gesture ||
         (e.target.closest && e.target.closest('.sidebar, .transform-bar'))) {
       cursorEl.style.display = 'none';
       return;
@@ -628,6 +642,7 @@
     }
 
     if (state.tool === 'select') { beginSelect(e, p); return; }
+    if (state.tool === 'rig') { beginRigDrag(e); return; }
     if (state.tool === 'transform') {
       if (!transform && !startTransform()) return;
       beginTransformDrag(e);
@@ -705,6 +720,7 @@
     if (picking) { endPick(); return; }
     if (selDraft) { activePointer = null; endSelect(); return; }
     if (tfDrag) { activePointer = null; tfDrag = null; return; }
+    if (rigDrag) { activePointer = null; endRigDrag(); return; }
     activePointer = null;
     clearTimeout(holdTimer);
     if (!busy()) return;
@@ -794,12 +810,13 @@
         if (picking) endPick(false);
         if (selDraft) { selDraft = null; activePointer = null; drawSelOverlay(); }
         if (tfDrag) { Object.assign(transform, tfDrag.start); tfDrag = null; activePointer = null; refreshTransform(); }
+        if (rigDrag) { activePointer = null; endRigDrag(); }
         if (activePointer !== null) {
           if (busy() && performance.now() - strokeStart > 300) finishPointer({ pointerId: activePointer });
           else abortStroke();
         }
         startGesture();
-      } else if (touches.size === 1 && (state.fingerDraw || state.tool === 'select' || state.tool === 'transform')) {
+      } else if (touches.size === 1 && (state.fingerDraw || state.tool === 'select' || state.tool === 'transform' || state.tool === 'rig')) {
         startDrawing(e);
       } else if (touches.size === 1) {
         // Finger drawing is off: touch and hold to pick a color.
@@ -844,6 +861,7 @@
     if (picking) { pickAt(e); return; }
     if (selDraft) { extendSelect(e); return; }
     if (tfDrag) { moveTransformDrag(e); return; }
+    if (rigDrag) { moveRigDrag(e); return; }
     if (!busy()) return;
     if (snapped) return; // the shape is done; lift to keep it
     if (stroke && (!holdAt || Math.hypot(e.clientX - holdAt.x, e.clientY - holdAt.y) > 4)) armHold(e);
@@ -1197,7 +1215,7 @@
   function drawUI() {
     uctx.setTransform(1, 0, 0, 1, 0, 0);
     uctx.clearRect(0, 0, ui.width, ui.height);
-    if (!transform) return;
+    if (!transform) { drawRigUI(); return; }
     uctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     const C = tfCorners().map((q) => docToStage(q.x, q.y));
     const mid = docToStage(transform.cx, transform.cy);
@@ -1601,6 +1619,13 @@
       const label = cell.btn.querySelector('.frame-label');
       label.innerHTML = '';
       label.append(String(doc.frames.indexOf(f) + 1));
+      if (doc.layers.some((l) => l.rig && l.rig.keys.has(f.id))) {
+        const k = document.createElement('span');
+        k.className = 'key';
+        k.textContent = '◆';
+        k.title = 'A puppet pose';
+        label.append(k);
+      }
       if (hold > 1) {
         const h = document.createElement('span');
         h.className = 'hold';
@@ -1635,6 +1660,7 @@
     updateFrameUI();
     onionDirty = true;
     requestRender();
+    if (state.tool === 'rig' && !playing) { drawUI(); refreshRigBar(); }
     if (!playing) refreshLayersPanel();
   }
   function stepFrame(dir) {
@@ -1651,13 +1677,19 @@
     for (const layer of doc.layers) {
       const cel = layer.cels.get(frame.id);
       if (cel) { saved.push([layer, cel]); layer.cels.delete(frame.id); }
+      if (layer.rig && layer.rig.keys.has(frame.id)) {
+        saved.push([layer, layer.rig.keys.get(frame.id), 'key']);
+        layer.rig.keys.delete(frame.id);
+      }
     }
     doc.frames.splice(index, 1);
     return saved;
   }
   function attachFrame(frame, index, saved) {
     doc.frames.splice(index, 0, frame);
-    for (const [layer, cel] of saved) layer.cels.set(frame.id, cel);
+    for (const [layer, item, kind] of saved) {
+      if (kind === 'key') layer.rig.keys.set(frame.id, item); else layer.cels.set(frame.id, item);
+    }
   }
 
   function framesChanged() {
@@ -1697,6 +1729,7 @@
     for (const layer of doc.layers) {
       const cel = layer.cels.get(doc.frame.id);
       if (cel) copies.push([layer, copyCanvas(cel)]);
+      if (layer.rig && layer.rig.keys.has(doc.frame.id)) copies.push([layer, clone(layer.rig.keys.get(doc.frame.id)), 'key']);
     }
     insertFrameStep('Duplicate frame', frame, copies);
   });
@@ -1881,6 +1914,7 @@
 
   function startPlay(opts) {
     opts = opts || {};
+    if (partEdit) { toast('Tap Done to finish editing the part first.'); return; }
     if (playing || busy()) return;
     if (transform) applyTransform();
     if (doc.frames.length < 2) { toast('Add more frames to play an animation.'); return; }
@@ -1890,6 +1924,7 @@
     if (playMode === 'once' && !opts.record && frameIndex() === doc.frames.length - 1) goFrame(doc.frames[0]);
     playing = true;
     cursorEl.style.display = 'none';
+    drawUI();
     updatePlayButton();
     refreshOnion();
     if (playMode === 'pingpong') {
@@ -1961,6 +1996,7 @@
     if (recording) stopRecording();
     if (!playing) return;
     playing = false;
+    drawUI();
     SoundEngine.stopAll(sounds);
     sounds = [];
     updatePlayButton();
@@ -2089,6 +2125,7 @@
       name.className = 'layer-name';
       name.textContent = layer.name;
       const extra = [];
+      if (layer.rig) extra.push('Puppet');
       if (layer.static) extra.push('All frames');
       if (layer.blend !== 'source-over') extra.push(BLEND_MODES.find((m) => m[0] === layer.blend)[1].split(' ')[0]);
       if (layer.opacity < 1) extra.push(Math.round(layer.opacity * 100) + '%');
@@ -2165,6 +2202,9 @@
     const copy = newLayer(src.name + ' copy');
     layerCounter--; // a copy doesn't use up a "Layer N" number
     src.cels.forEach((cel, key) => copy.cels.set(key, copyCanvas(cel)));
+    if (src.rig) {
+      copy.rig = { nodes: clone(src.rig.nodes), keys: new Map([...src.rig.keys].map(([k, v]) => [k, clone(v)])), nodeIds: src.rig.nodeIds };
+    }
     copy.static = src.static;
     copy.opacity = src.opacity;
     copy.blend = src.blend;
@@ -2195,6 +2235,10 @@
     if (index <= 0) return;
     const lower = doc.layers[index - 1];
     if (lower.locked || upper.locked) { toast('Unlock both layers before merging them.'); return; }
+    if (lower.rig || upper.rig) {
+      toast('Puppet layers can\'t be merged. To turn a pose into a drawing, use Select → Copy to new layer.');
+      return;
+    }
     if (lower.static !== upper.static) {
       toast('Both layers need the same "Same on every frame" setting to merge.');
       return;
@@ -2282,6 +2326,11 @@
   $('#l-static').addEventListener('change', (e) => {
     const layer = doc.active;
     const on = e.target.checked;
+    if (layer.rig) {
+      e.target.checked = false;
+      toast('A puppet layer is already on every frame, moving between your poses.');
+      return;
+    }
     if (busy() || layer.static === on) return;
     stopPlay();
     const beforeCels = new Map(layer.cels);
@@ -2344,6 +2393,7 @@
   // ---------------------------------------------------------------------------
   function setTool(t) {
     if (t === state.tool) { syncUI(); return; }
+    if (partEdit && t === 'rig') { toast('Tap Done to finish editing the part first.'); return; }
     if (state.tool === 'transform' && transform) applyTransform();
     if (t === 'transform') {
       const prev = state.tool;
@@ -2353,14 +2403,23 @@
     if (t === 'select' && !selection) toast('Draw around the area you want to select.', 2000);
     if (t === 'eyedropper' && state.tool !== 'eyedropper') state.prevTool = state.tool;
     state.tool = t;
+    rigAttach = false;
+    if (t === 'rig' && !activeRig()) {
+      // Jump to the puppet layer if there is one.
+      const r = topRigLayer();
+      if (r) { drawingLayer = doc.active; doc.active = r; refreshLayersPanel(); toast(`Switched to the "${r.name}" layer.`, 1800); }
+      else toast('No puppet yet: tap the Rig tool again to make parts from your drawing.', 3000);
+    }
     syncUI();
+    requestRender();
+    drawUI();
   }
   // Tap a tool to choose it; tap it again to open its settings.
   $$('[data-tool]').forEach((b) => b.addEventListener('click', () => {
     const t = b.dataset.tool;
     if (state.tool === t && t === 'transform') return;
     if (state.tool === t && t !== 'eyedropper') {
-      const panel = t === 'select' ? $('#panel-select') : $('#panel-brush');
+      const panel = t === 'select' ? $('#panel-select') : t === 'rig' ? $('#panel-rig') : $('#panel-brush');
       if (panel.hidden) openPanel(panel, b); else closePanels();
     } else {
       closePanels();
@@ -2439,9 +2498,13 @@
       document.activeElement.blur();
     }
     $$('.panel').forEach((p) => { p.hidden = true; });
-    $$('.btn.open').forEach((b) => b.classList.remove('open'));
+    $$('.open').forEach((b) => b.classList.remove('open'));
   }
   function openPanel(panel, anchor) {
+    if (partEdit && ['panel-layers', 'panel-rig', 'panel-export', 'panel-menu'].includes(panel.id)) {
+      toast('Tap Done to finish editing the part first.');
+      return;
+    }
     if (transform) applyTransform();
     closePanels();
     panel.hidden = false;
@@ -2452,6 +2515,7 @@
     if (panel.id === 'panel-frame') refreshFramePanel();
     if (panel.id === 'panel-audio') buildAudioList();
     if (panel.id === 'panel-export') { refreshExportPanel(); refreshTimelapseInfo(); }
+    if (panel.id === 'panel-rig') buildPartsGrid();
     if (panel.id === 'panel-menu') $('#p-name').value = project.name === 'Untitled' ? '' : project.name;
     const r = anchor.getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
@@ -2601,6 +2665,8 @@
     $('#b-jitter-out').textContent = b.jitter + '%';
     $$('#select-modes button').forEach((x) => x.classList.toggle('active', x.dataset.mode === state.selectMode));
     stage.classList.toggle('moving', tool === 'transform');
+    stage.classList.toggle('rigging', tool === 'rig');
+    refreshRigBar();
     $('#b-pressure').checked = state.pressure;
 
     $('#e-size').value = sizeToSlider(state.eraser.size);
@@ -2731,7 +2797,13 @@
         id: l.id, name: l.name, static: l.static, visible: l.visible, locked: l.locked,
         opacity: l.opacity, blend: l.blend,
         cels: [...l.cels.keys()].filter((k) => k === 'static' || frameIds.has(k)),
+        rig: l.rig ? {
+          nodeIds: l.rig.nodeIds,
+          nodes: l.rig.nodes,
+          keys: Object.fromEntries([...l.rig.keys].filter(([fid]) => frameIds.has(fid))),
+        } : undefined,
       })),
+      parts: [...doc.parts.values()].map((pt) => ({ id: pt.id, name: pt.name, w: pt.canvas.width, h: pt.canvas.height })),
       audio: audioClips.map((c) => ({
         id: c.id, name: c.name, offset: c.offset, skip: c.skip, volume: c.volume, muted: c.muted, type: c.blob.type,
       })),
@@ -2743,7 +2815,7 @@
   }
 
   function scheduleAutosave() {
-    if (restoring) return;
+    if (restoring || partEdit) return;
     unsaved = true;
     if (!storageOK) return;
     setSaveStatus('saving');
@@ -2773,6 +2845,11 @@
             puts.push([rk, cel, await encodeCel(cel)]);
           }
         }
+      }
+      for (const part of doc.parts.values()) {
+        const rk = `part|${part.id}`;
+        keep.add(rk);
+        if (lastSaved.get(rk) !== part.canvas) puts.push([rk, part.canvas, { part: true, blob: await partBlob(part.canvas) }]);
       }
       for (const clip of audioClips) {
         const rk = `audio|${clip.id}`;
@@ -2804,7 +2881,8 @@
    * Replace the current project with a saved one.
    * meta: the project description; fetchCel(layerId, key) -> picture (or null).
    */
-  async function loadProject(meta, fetchCel, fetchAudio) {
+  async function loadProject(meta, fetchCel, fetchAudio, fetchPart) {
+    if (partEdit) finishPartEdit(false);
     if (!meta || !Array.isArray(meta.frames) || !Array.isArray(meta.layers) ||
         !meta.frames.length || !meta.layers.length) {
       throw new Error('This file doesn\'t look like a Playground project.');
@@ -2821,6 +2899,25 @@
       return { id, hold: clamp(Math.round(+f.hold) || 1, 1, 24), oldId: String(f.id) };
     });
     const idMap = new Map(frames.map((f) => [f.oldId, f.id]));
+    // Puppet parts
+    const parts = new Map();
+    let maxP = 0;
+    for (const P of (Array.isArray(meta.parts) ? meta.parts : []).slice(0, 500)) {
+      try {
+        const id = String(P.id || '');
+        if (!/^p\d+$/.test(id) || parts.has(id) || !fetchPart) continue;
+        const src = await fetchPart(P);
+        if (!src) continue;
+        const img = await ProjectStorage.toImage(src);
+        const c = makeCanvas(clamp(Math.round(+P.w) || img.width, 1, DOC_W * 3), clamp(Math.round(+P.h) || img.height, 1, DOC_H * 3));
+        c.getContext('2d').drawImage(img, 0, 0);
+        if (img.close) img.close();
+        parts.set(id, { id, name: String(P.name || 'Part').slice(0, 40), canvas: c });
+        maxP = Math.max(maxP, num(id));
+      } catch (err) {
+        console.warn('A puppet part could not be loaded', err);
+      }
+    }
     const blends = BLEND_MODES.map((m) => m[0]);
     const layers = [];
     for (const L of meta.layers.slice(0, MAX_LAYERS)) {
@@ -2844,6 +2941,29 @@
         if (!newKey) continue;
         const c = await fetchCel(String(L.id), String(key), L);
         if (c) layer.cels.set(newKey, c);
+      }
+      if (L.rig && typeof L.rig === 'object') {
+        const nodes = (Array.isArray(L.rig.nodes) ? L.rig.nodes : [])
+          .filter((n) => n && parts.has(String(n.partId)))
+          .map((n) => ({
+            id: String(n.id), partId: String(n.partId), parent: n.parent ? String(n.parent) : null,
+            restX: +n.restX || 0, restY: +n.restY || 0, pivotX: +n.pivotX || 0, pivotY: +n.pivotY || 0, z: +n.z || 0,
+          }));
+        const ids = new Set(nodes.map((n) => n.id));
+        nodes.forEach((n) => { if (n.parent && !ids.has(n.parent)) n.parent = null; });
+        const keys = new Map();
+        for (const [fid, k] of Object.entries(L.rig.keys || {})) {
+          const nf = idMap.get(String(fid));
+          if (!nf || !k || typeof k.pose !== 'object') continue;
+          const pose = {};
+          for (const [nid, v] of Object.entries(k.pose)) {
+            if (!ids.has(nid) || !v) continue;
+            pose[nid] = { x: +v.x || 0, y: +v.y || 0, rot: +v.rot || 0, s: Number.isFinite(+v.s) ? +v.s : 1 };
+          }
+          keys.set(nf, { ease: k.ease !== false, pose });
+        }
+        layer.rig = { nodes, keys, nodeIds: Math.max(+L.rig.nodeIds || 0, 0, ...nodes.map((n) => num(n.id))) };
+        layer.static = false;
       }
       layers.push(layer);
     }
@@ -2873,6 +2993,11 @@
     closePanels();
     doc.layers = layers;
     doc.frames = frames;
+    doc.parts = parts;
+    partIds = maxP;
+    partsVersion++;
+    rigSel = null;
+    rigAttach = false;
     audioClips.length = 0;
     audioClips.push(...clips);
     clipIds = Math.max(maxA, clips.length);
@@ -2918,10 +3043,14 @@
         }, async (A) => {
           const rec = await ProjectStorage.get('cels', `audio|${A.id}`);
           return rec && rec.blob;
+        }, async (P) => {
+          const rec = await ProjectStorage.get('cels', `part|${P.id}`);
+          return rec && rec.blob;
         });
         // What's on screen now matches what's saved.
         for (const layer of doc.layers) layer.cels.forEach((cel, key) => lastSaved.set(`${layer.id}|${key}`, cel));
         for (const clip of audioClips) lastSaved.set(`audio|${clip.id}`, clip);
+        for (const part of doc.parts.values()) lastSaved.set(`part|${part.id}`, part.canvas);
         toast('Welcome back! Your last project is open.', 2200);
       }
     } catch (err) {
@@ -2960,6 +3089,9 @@
       for (const A of meta.audio) {
         const clip = audioClips.find((c) => c.id === A.id);
         A.data = await ProjectStorage.blobToDataURL(clip.blob);
+      }
+      for (const P of meta.parts) {
+        P.png = await ProjectStorage.blobToDataURL(await partBlob(doc.parts.get(P.id).canvas));
       }
       blob = new Blob([JSON.stringify(meta)], { type: 'application/json' });
     } catch (err) {
@@ -3003,7 +3135,7 @@
       }, async (A) => {
         if (typeof A.data !== 'string' || !/^data:(audio|video)\//.test(A.data)) return null;
         return (await fetch(A.data)).blob();
-      });
+      }, async (P) => (typeof P.png === 'string' && /^data:image\/png;base64,/.test(P.png) ? P.png : null));
       if (!meta.name) project.name = file.name.replace(/\.(anim|json)$/i, '') || 'Untitled';
       updateTitle();
       tlReset();
@@ -3458,7 +3590,7 @@
 
   // Make the video by playing the animation (and its sound) into a recorder.
   async function startExport() {
-    if (busy() || exporting) return;
+    if (busy() || exporting || partEdit) return;
     if (transform) applyTransform();
     stopPlay();
     closePanels();
@@ -3579,7 +3711,7 @@
   const tlCanvas = makeCanvas(TL_W, TL_H);
 
   function tlSchedule() {
-    if (!state.timelapse || restoring) return;
+    if (!state.timelapse || restoring || partEdit) return;
     clearTimeout(tlTimer);
     tlTimer = setTimeout(tlCapture, 350);
   }
@@ -3775,6 +3907,699 @@
   $('#tl-export-btn').addEventListener('click', exportTimelapse);
 
   // ---------------------------------------------------------------------------
+  // Rigging: puppet parts, joints, poses and automatic in-betweens (see rig.js)
+  // ---------------------------------------------------------------------------
+  let partIds = 0, partsVersion = 0;
+  let rigSel = null;     // the selected part on the puppet (node id)
+  let rigAttach = false; // waiting for you to tap the part to attach to
+  let rigDrag = null;    // a drag in progress
+  let rigUI = null;      // where the on-screen handles are
+  let partEdit = null;   // editing a part's drawing
+  let restView = false;  // draw puppets unposed (only while setting up joints)
+  let addFramesCount = 3;
+  let drawingLayer = null; // the drawing layer you were on before the Rig tool switched to the puppet
+
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const activeRig = () => (doc.active && doc.active.rig ? doc.active : null);
+  function topRigLayer() {
+    for (let i = doc.layers.length - 1; i >= 0; i--) if (doc.layers[i].rig) return doc.layers[i];
+    return null;
+  }
+  const rigSetupMode = () => state.tool === 'rig' && state.rigMode === 'setup';
+  function newRigLayer() {
+    const l = newLayer('Puppet');
+    layerCounter--;
+    l.rig = { nodes: [], keys: new Map(), nodeIds: 0 };
+    return l;
+  }
+  async function partBlob(canvas) {
+    if (window.OffscreenCanvas) {
+      try {
+        const oc = new OffscreenCanvas(canvas.width, canvas.height);
+        oc.getContext('2d').drawImage(canvas, 0, 0);
+        return await oc.convertToBlob({ type: 'image/png' });
+      } catch (_) { /* use the normal way */ }
+    }
+    return ProjectStorage.canvasToBlob(canvas);
+  }
+
+  // The pose on a frame (your key pose, or an automatic in-between).
+  function rigPoseAt(layer, frame) {
+    const tl = buildTimeline();
+    return Rig.poseAt(layer.rig, doc.frames.map((f) => f.id), tl.starts, doc.frames.indexOf(frame));
+  }
+  // The puppet's picture for one frame. The last few are kept so redrawing is quick.
+  function rigCel(layer, frame) {
+    const rest = restView && layer === activeRig() && rigSetupMode();
+    const sig = `${frame.id}|${rest ? 'rest' : ''}|${layer._rv || 0}|${partsVersion}|${doc.fps}|` +
+      doc.frames.map((f) => f.id + ':' + (f.hold || 1)).join(',');
+    if (!layer._rc) layer._rc = new Map();
+    let c = layer._rc.get(sig);
+    if (c) return c;
+    if (layer._rc.size >= 6) {
+      const oldest = layer._rc.keys().next().value;
+      c = layer._rc.get(oldest);
+      layer._rc.delete(oldest);
+    } else c = makeCanvas(DOC_W, DOC_H);
+    const g = c.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, DOC_W, DOC_H);
+    Rig.render(g, layer.rig, rest ? {} : rigPoseAt(layer, frame).pose, doc.parts);
+    layer._rc.set(sig, c);
+    return c;
+  }
+  // Something about a puppet changed: redraw. (light = while dragging: skip the slower updates)
+  function rigChanged(layer, light) {
+    if (layer) layer._rv = (layer._rv || 0) + 1;
+    requestRender();
+    drawUI();
+    if (light) return;
+    markAllThumbs();
+    refreshOnion();
+    refreshRigBar();
+    updateFrameUI();
+    scheduleAutosave();
+    refreshLayersPanel();
+  }
+  function rigChangedAll() {
+    doc.layers.forEach((l) => { if (l.rig) l._rv = (l._rv || 0) + 1; });
+    rigChanged(null);
+  }
+  const rigDisplayPose = (layer) => (rigSetupMode() ? {} : rigPoseAt(layer, doc.frame).pose);
+
+  // Joints, bones and handles, drawn on top in screen pixels.
+  function drawRigUI() {
+    rigUI = null;
+    const layer = activeRig();
+    if (!layer || state.tool !== 'rig' || partEdit || playing) return;
+    const W = Rig.world(layer.rig, rigDisplayPose(layer));
+    const setup = rigSetupMode();
+    uctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const pivotScreen = (n) => {
+      const pw = Rig.pivotOf(n);
+      const q = Rig.apply(W.get(n.id), pw.x, pw.y);
+      return docToStage(q.x, q.y);
+    };
+    uctx.lineCap = 'round';
+    for (const n of layer.rig.nodes) {
+      const par = n.parent && Rig.nodeOf(layer.rig, n.parent);
+      if (!par) continue;
+      const a = pivotScreen(par), b = pivotScreen(n);
+      uctx.beginPath();
+      uctx.moveTo(a.x, a.y);
+      uctx.lineTo(b.x, b.y);
+      uctx.lineWidth = 5;
+      uctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      uctx.stroke();
+      uctx.lineWidth = 2.5;
+      uctx.strokeStyle = 'rgba(245,165,36,0.95)';
+      uctx.stroke();
+    }
+    const sel = rigSel && Rig.nodeOf(layer.rig, rigSel);
+    if (sel && doc.parts.get(sel.partId)) {
+      const part = doc.parts.get(sel.partId), M = W.get(sel.id);
+      const C = [[0, 0], [part.canvas.width, 0], [part.canvas.width, part.canvas.height], [0, part.canvas.height]]
+        .map(([x, y]) => { const q = Rig.apply(M, sel.restX + x, sel.restY + y); return docToStage(q.x, q.y); });
+      uctx.beginPath();
+      C.forEach((q, i) => (i ? uctx.lineTo(q.x, q.y) : uctx.moveTo(q.x, q.y)));
+      uctx.closePath();
+      uctx.setLineDash([5, 4]);
+      uctx.lineWidth = 1.5;
+      uctx.strokeStyle = '#4f6df5';
+      uctx.stroke();
+      uctx.setLineDash([]);
+      rigUI = { pivot: pivotScreen(sel) };
+      if (!setup && !sel.parent) {
+        // The whole puppet: a round handle to turn it, a square one to resize it.
+        const top = { x: (C[0].x + C[1].x) / 2, y: (C[0].y + C[1].y) / 2 };
+        const mid = { x: (C[0].x + C[2].x) / 2, y: (C[0].y + C[2].y) / 2 };
+        let dx = top.x - mid.x, dy = top.y - mid.y;
+        const len = Math.hypot(dx, dy) || 1;
+        dx /= len; dy /= len;
+        const rot = { x: top.x + dx * 30, y: top.y + dy * 30 };
+        uctx.beginPath();
+        uctx.moveTo(top.x, top.y);
+        uctx.lineTo(rot.x, rot.y);
+        uctx.lineWidth = 1.5;
+        uctx.strokeStyle = '#4f6df5';
+        uctx.stroke();
+        uctx.beginPath();
+        uctx.arc(rot.x, rot.y, 8, 0, Math.PI * 2);
+        uctx.fillStyle = '#4f6df5';
+        uctx.fill();
+        uctx.fillStyle = '#fff';
+        uctx.fillRect(C[2].x - 7, C[2].y - 7, 14, 14);
+        uctx.strokeRect(C[2].x - 7, C[2].y - 7, 14, 14);
+        rigUI.rot = rot;
+        rigUI.scale = C[2];
+      }
+    }
+    for (const n of layer.rig.nodes) {
+      const q = pivotScreen(n);
+      uctx.beginPath();
+      uctx.arc(q.x, q.y, setup ? (n.id === rigSel ? 8 : 6) : 4, 0, Math.PI * 2);
+      uctx.fillStyle = n.id === rigSel ? '#f5a524' : '#fff';
+      uctx.fill();
+      uctx.lineWidth = 2;
+      uctx.strokeStyle = '#1f2328';
+      uctx.stroke();
+    }
+  }
+
+  // An undoable change to how the puppet is put together.
+  function setupStep(layer, label, change) {
+    const before = clone(layer.rig.nodes);
+    change();
+    const after = clone(layer.rig.nodes);
+    history.push({
+      label,
+      undo() { layer.rig.nodes = clone(before); rigChanged(layer); },
+      redo() { layer.rig.nodes = clone(after); rigChanged(layer); },
+    });
+    rigChanged(layer);
+  }
+  // An undoable change to this frame's pose (it becomes a key pose).
+  function poseStep(layer, label, change) {
+    const fid = doc.frame.id, frame = doc.frame;
+    const before = layer.rig.keys.has(fid) ? clone(layer.rig.keys.get(fid)) : null;
+    let key = layer.rig.keys.get(fid);
+    if (!key) { key = { ease: true, pose: clone(rigPoseAt(layer, frame).pose) }; layer.rig.keys.set(fid, key); }
+    change(key);
+    const after = clone(key);
+    history.push({
+      label,
+      frame,
+      undo() { if (before) layer.rig.keys.set(fid, clone(before)); else layer.rig.keys.delete(fid); rigChanged(layer); },
+      redo() { layer.rig.keys.set(fid, clone(after)); rigChanged(layer); },
+    });
+    rigChanged(layer);
+  }
+
+  function beginRigDrag(e) {
+    const layer = activeRig();
+    if (!layer) { toast('There\'s no puppet yet. Tap the Rig tool again to make parts from your drawing.'); return; }
+    if (layer.locked) { toast(`"${layer.name}" is locked. Unlock it in the Layers panel.`); return; }
+    if (!layer.visible) { toast(`"${layer.name}" is hidden. Show it in the Layers panel.`); return; }
+    const p = toDoc(e);
+    const sr = stage.getBoundingClientRect();
+    const sp = { x: e.clientX - sr.left, y: e.clientY - sr.top };
+    const near = (q, r) => q && Math.hypot(sp.x - q.x, sp.y - q.y) < (r || 22);
+    const setup = rigSetupMode();
+    const pose = rigDisplayPose(layer);
+    const W = Rig.world(layer.rig, pose);
+    let node = rigSel && Rig.nodeOf(layer.rig, rigSel);
+
+    if (setup && rigAttach) {
+      // The tap that chooses what the selected part hangs from.
+      rigAttach = false;
+      const target = Rig.hit(layer.rig, W, doc.parts, p.x, p.y);
+      if (node && target && target.id !== node.id) {
+        if (Rig.wouldLoop(layer.rig, node.id, target.id)) toast('That would attach a part to itself. Try another part.');
+        else {
+          setupStep(layer, 'Attach part', () => { Rig.nodeOf(layer.rig, node.id).parent = target.id; });
+          const a = doc.parts.get(node.partId), b = doc.parts.get(target.partId);
+          toast(`"${a ? a.name : 'Part'}" now hangs from "${b ? b.name : 'part'}". It turns around its dot.`);
+        }
+      } else toast('Attaching cancelled. Select a part and try again.');
+      refreshRigBar();
+      drawUI();
+      return;
+    }
+
+    let mode = null;
+    if (setup && node && near(rigUI && rigUI.pivot, 18)) mode = 'pivot';
+    else if (!setup && node && !node.parent && rigUI && near(rigUI.rot)) mode = 'turn';
+    else if (!setup && node && !node.parent && rigUI && near(rigUI.scale)) mode = 'size';
+    else {
+      node = Rig.hit(layer.rig, W, doc.parts, p.x, p.y);
+      rigSel = node ? node.id : null;
+      if (node) mode = setup ? 'place' : node.parent ? 'bend' : 'move';
+    }
+    refreshRigBar();
+    drawUI();
+    if (!mode) return;
+    activePointer = e.pointerId;
+    try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    const pv = Rig.pivotOf(node);
+    rigDrag = {
+      layer, mode, nodeId: node.id, p0: p, moved: false, acc: 0, lastA: null,
+      pivotWorld: Rig.apply(W.get(node.id), pv.x, pv.y),
+      before: setup ? clone(layer.rig.nodes) : (layer.rig.keys.has(doc.frame.id) ? clone(layer.rig.keys.get(doc.frame.id)) : null),
+      startPose: clone(pose),
+      frameId: doc.frame.id,
+    };
+  }
+
+  function moveRigDrag(e) {
+    const d = rigDrag, layer = d.layer;
+    const node = Rig.nodeOf(layer.rig, d.nodeId);
+    if (!node) return;
+    const p = toDoc(e);
+    if (!d.moved) {
+      if (Math.hypot(p.x - d.p0.x, p.y - d.p0.y) < 2) return;
+      d.moved = true;
+      if (d.mode === 'place') d.fam = Rig.family(layer.rig, node.id).map((n) => ({ n, x: n.restX, y: n.restY }));
+    }
+    if (d.mode === 'pivot') {
+      node.pivotX = p.x - node.restX;
+      node.pivotY = p.y - node.restY;
+    } else if (d.mode === 'place') {
+      // Moving a part in setup also moves everything hanging from it.
+      const dx = p.x - d.p0.x, dy = p.y - d.p0.y;
+      for (const f of d.fam) { f.n.restX = f.x + dx; f.n.restY = f.y + dy; }
+    } else {
+      // Posing: this frame becomes a key pose, starting from what you see.
+      let key = layer.rig.keys.get(d.frameId);
+      if (!key) { key = { ease: true, pose: clone(d.startPose) }; layer.rig.keys.set(d.frameId, key); }
+      const s0 = d.startPose[node.id] || { x: 0, y: 0, rot: 0, s: 1 };
+      const cur = key.pose[node.id] || (key.pose[node.id] = { x: s0.x || 0, y: s0.y || 0, rot: s0.rot || 0, s: s0.s == null ? 1 : s0.s });
+      const c = d.pivotWorld;
+      if (d.mode === 'move') {
+        cur.x = (s0.x || 0) + (p.x - d.p0.x);
+        cur.y = (s0.y || 0) + (p.y - d.p0.y);
+      } else if (d.mode === 'bend' || d.mode === 'turn') {
+        const a = Math.atan2(p.y - c.y, p.x - c.x);
+        if (d.lastA == null) d.lastA = Math.atan2(d.p0.y - c.y, d.p0.x - c.x);
+        let da = a - d.lastA;
+        da = Math.atan2(Math.sin(da), Math.cos(da)); // keeps working past a full turn
+        d.acc += da;
+        d.lastA = a;
+        cur.rot = (s0.rot || 0) + d.acc;
+      } else if (d.mode === 'size') {
+        const r0 = Math.hypot(d.p0.x - c.x, d.p0.y - c.y) || 1;
+        cur.s = clamp((s0.s == null ? 1 : s0.s) * (Math.hypot(p.x - c.x, p.y - c.y) / r0), 0.1, 10);
+      }
+    }
+    rigChanged(layer, true);
+  }
+
+  function endRigDrag() {
+    const d = rigDrag;
+    rigDrag = null;
+    if (!d) return;
+    const layer = d.layer;
+    if (!d.moved) { rigChanged(layer); return; }
+    if (d.mode === 'pivot' || d.mode === 'place') {
+      const before = d.before, after = clone(layer.rig.nodes);
+      history.push({
+        label: d.mode === 'pivot' ? 'Move joint' : 'Move part',
+        undo() { layer.rig.nodes = clone(before); rigChanged(layer); },
+        redo() { layer.rig.nodes = clone(after); rigChanged(layer); },
+      });
+    } else {
+      const fid = d.frameId, before = d.before, after = clone(layer.rig.keys.get(fid));
+      const frame = doc.frames.find((f) => f.id === fid);
+      history.push({
+        label: 'Pose',
+        frame,
+        undo() { if (before) layer.rig.keys.set(fid, clone(before)); else layer.rig.keys.delete(fid); rigChanged(layer); },
+        redo() { layer.rig.keys.set(fid, clone(after)); rigChanged(layer); },
+      });
+    }
+    rigChanged(layer);
+  }
+
+  function reorderPart(layer, node, dir) {
+    const order = [...layer.rig.nodes].sort((a, b) => a.z - b.z);
+    const i = order.findIndex((n) => n.id === node.id), j = i + dir;
+    if (j < 0 || j >= order.length) { toast(dir > 0 ? 'It\'s already in front.' : 'It\'s already at the back.'); return; }
+    const a = order[i].id, b = order[j].id;
+    setupStep(layer, 'Change part order', () => {
+      const na = Rig.nodeOf(layer.rig, a), nb = Rig.nodeOf(layer.rig, b);
+      [na.z, nb.z] = [nb.z, na.z];
+      if (na.z === nb.z) na.z += dir;
+    });
+  }
+  function removeNode(layer, node) {
+    setupStep(layer, 'Remove part from puppet', () => {
+      for (const n of layer.rig.nodes) if (n.parent === node.id) n.parent = node.parent || null;
+      layer.rig.nodes = layer.rig.nodes.filter((n) => n.id !== node.id);
+    });
+    rigSel = null;
+    refreshRigBar();
+    toast('Removed from the puppet. It\'s still in your parts, so you can add it again.');
+  }
+
+  // The bar along the top while the Rig tool is in use.
+  function refreshRigBar() {
+    const bar = $('#rig-bar');
+    const show = state.tool === 'rig' && !partEdit;
+    bar.hidden = !show;
+    if (!show) return;
+    $$('#rig-modes button').forEach((b) => b.classList.toggle('active', b.dataset.mode === state.rigMode));
+    const actions = $('#rig-actions');
+    actions.innerHTML = '';
+    const add = (label, fn, o) => {
+      o = o || {};
+      const b = document.createElement('button');
+      b.className = 'mini' + (o.on ? ' on' : '') + (o.danger ? ' danger' : '');
+      b.textContent = label;
+      if (o.title) b.title = o.title;
+      b.addEventListener('click', fn);
+      actions.appendChild(b);
+    };
+    const layer = activeRig();
+    if (!layer) {
+      $('#rig-hint').textContent = 'No puppet on this layer. Tap the Rig tool again to make parts from your drawing.';
+      return;
+    }
+    const node = rigSel && Rig.nodeOf(layer.rig, rigSel);
+    const part = node && doc.parts.get(node.partId);
+    const pname = part ? `"${part.name}"` : 'this part';
+    if (state.rigMode === 'setup') {
+      $('#rig-hint').textContent = rigAttach ? `Now tap the part ${pname} hangs from.`
+        : node ? `${pname}: drag its dot onto the joint, or drag the part to move it.`
+          : 'Tap a part to select it. Puppets show unposed here.';
+      if (node) {
+        add('Attach to…', () => { rigAttach = !rigAttach; refreshRigBar(); }, { on: rigAttach, title: 'Then tap the part it hangs from' });
+        if (node.parent) add('Detach', () => setupStep(layer, 'Detach part', () => { Rig.nodeOf(layer.rig, node.id).parent = null; }));
+        add('Forward', () => reorderPart(layer, node, 1), { title: 'Draw it in front of other parts' });
+        add('Back', () => reorderPart(layer, node, -1), { title: 'Draw it behind other parts' });
+        add('Edit drawing', () => startPartEdit(node), { title: 'Change this part\'s drawing everywhere it\'s used' });
+        add('Remove', () => removeNode(layer, node), { danger: true, title: 'Take it off the puppet' });
+      }
+    } else {
+      const info = rigPoseAt(layer, doc.frame);
+      const where = info.kind === 'key' ? 'This frame has your pose ◆.'
+        : info.kind === 'between' ? 'This frame is an automatic in-between.' : 'No pose on this frame yet.';
+      $('#rig-hint').textContent = node
+        ? `${where} Drag ${pname} to ${node.parent ? 'bend it at its joint' : 'move the whole puppet'}.`
+        : `${where} Drag a part to pose it.`;
+      if (node) {
+        add('Reset part', () => poseStep(layer, 'Reset part', (key) => {
+          const cur = key.pose[node.id] || {};
+          key.pose[node.id] = node.parent ? { x: 0, y: 0, rot: 0, s: 1 } : { x: cur.x || 0, y: cur.y || 0, rot: 0, s: 1 };
+        }), { title: 'Straighten this part on this frame' });
+      }
+      if (info.key) {
+        add('Smooth', () => { info.key.ease = info.key.ease === false; rigChanged(layer); },
+          { on: info.key.ease !== false, title: 'Start and stop gently when moving away from this pose' });
+        add('Remove pose', () => {
+          const fid = doc.frame.id, frame = doc.frame, before = clone(info.key);
+          layer.rig.keys.delete(fid);
+          history.push({
+            label: 'Remove pose', frame,
+            undo() { layer.rig.keys.set(fid, clone(before)); rigChanged(layer); },
+            redo() { layer.rig.keys.delete(fid); rigChanged(layer); },
+          });
+          rigChanged(layer);
+        }, { danger: true, title: 'Let this frame move automatically again' });
+      }
+    }
+  }
+  $$('#rig-modes button').forEach((b) => b.addEventListener('click', () => {
+    state.rigMode = b.dataset.mode;
+    rigAttach = false;
+    saveSettings();
+    refreshRigBar();
+    requestRender();
+    drawUI();
+  }));
+
+  // ---- Making parts ----
+  function makePart() {
+    if (busy() || partEdit) return;
+    if (transform) applyTransform();
+    stopPlay();
+    // Parts come from your drawing layer (even while the Rig tool has the puppet layer selected).
+    let src = activeLayer();
+    if (src.rig) src = drawingLayer && doc.layers.includes(drawingLayer) && !drawingLayer.rig
+      ? drawingLayer : [...doc.layers].reverse().find((l) => !l.rig && celOf(l, doc.frame));
+    if (!src) { toast('Draw something on a normal layer first, then make parts from it.'); return; }
+    if (src.locked) { toast(`"${src.name}" is locked. Unlock it first.`); return; }
+    const cel = celOf(src, doc.frame);
+    if (!cel) { toast(`"${src.name}" has nothing drawn on this frame.`); return; }
+    const lifted = copyCanvas(cel);
+    const lc = lifted.getContext('2d');
+    if (selection) {
+      lc.globalCompositeOperation = 'destination-in';
+      lc.drawImage(selection.mask, 0, 0);
+    }
+    const bb = alphaBounds(lc.getImageData(0, 0, DOC_W, DOC_H).data);
+    if (!bb) { toast(selection ? 'There\'s nothing drawn inside the selection on this layer.' : 'This layer is empty here.'); return; }
+    const name = prompt('Name this part (for example "Head" or "Left arm"):', `Part ${partIds + 1}`);
+    if (name === null) return;
+    const canvas = makeCanvas(bb.w, bb.h);
+    canvas.getContext('2d').drawImage(lifted, -bb.x, -bb.y);
+    const part = { id: 'p' + (++partIds), name: name.trim().slice(0, 40) || `Part ${partIds}`, canvas };
+
+    let layer = topRigLayer();
+    const created = !layer;
+    if (created) layer = newRigLayer();
+    const node = {
+      id: 'n' + (++layer.rig.nodeIds), partId: part.id, parent: null,
+      restX: bb.x, restY: bb.y, pivotX: bb.w / 2, pivotY: bb.h / 2,
+      z: Math.max(0, ...layer.rig.nodes.map((n) => n.z)) + 1,
+    };
+    // Take it out of the drawing (so it isn't there twice).
+    const remove = state.rigRemove;
+    const ctx = cel.getContext('2d');
+    let before = null, after = null;
+    if (remove) {
+      before = ctx.getImageData(bb.x, bb.y, bb.w, bb.h);
+      ctx.save();
+      if (selection) { ctx.globalCompositeOperation = 'destination-out'; ctx.drawImage(selection.mask, 0, 0); }
+      else ctx.clearRect(bb.x, bb.y, bb.w, bb.h);
+      ctx.restore();
+      after = ctx.getImageData(bb.x, bb.y, bb.w, bb.h);
+    }
+    const index = layerIndex(src) + 1;
+    const apply = () => {
+      doc.parts.set(part.id, part);
+      if (created) putLayer(layer, index);
+      if (!layer.rig.nodes.some((n) => n.id === node.id)) layer.rig.nodes.push(clone(node));
+      if (remove) { ctx.putImageData(after, bb.x, bb.y); markCelDirty(cel); }
+      drawingLayer = src;
+      doc.active = state.tool === 'rig' ? layer : src;
+      partsVersion++;
+      rigChanged(layer);
+    };
+    const unapply = () => {
+      doc.parts.delete(part.id);
+      layer.rig.nodes = layer.rig.nodes.filter((n) => n.id !== node.id);
+      if (created) takeLayer(layer);
+      if (remove) { ctx.putImageData(before, bb.x, bb.y); markCelDirty(cel); }
+      doc.active = state.tool === 'rig' && layer.rig.nodes.length && doc.layers.includes(layer) ? layer : src;
+      partsVersion++;
+      rigChanged(layer);
+    };
+    apply();
+    history.push({ label: 'Make part', frame: doc.frame, undo: unapply, redo: apply });
+    setSelection(null);
+    layersChanged();
+    buildPartsGrid();
+    toast(`"${part.name}" is now a puppet part${created ? ' on a new "Puppet" layer' : ''}. Make the other parts, then use the Rig tool to join and pose them.`, 4500);
+  }
+
+  function addPartToPuppet(part) {
+    if (partEdit) return;
+    let layer = activeRig() || topRigLayer();
+    const created = !layer;
+    if (created) layer = newRigLayer();
+    const node = {
+      id: 'n' + (++layer.rig.nodeIds), partId: part.id, parent: null,
+      restX: Math.round((DOC_W - part.canvas.width) / 2), restY: Math.round((DOC_H - part.canvas.height) / 2),
+      pivotX: part.canvas.width / 2, pivotY: part.canvas.height / 2,
+      z: Math.max(0, ...layer.rig.nodes.map((n) => n.z)) + 1,
+    };
+    const index = layerIndex(doc.active) + 1, prevActive = doc.active;
+    const apply = () => {
+      if (created) putLayer(layer, index);
+      if (!layer.rig.nodes.some((n) => n.id === node.id)) layer.rig.nodes.push(clone(node));
+      doc.active = layer;
+      rigChanged(layer);
+    };
+    const unapply = () => {
+      layer.rig.nodes = layer.rig.nodes.filter((n) => n.id !== node.id);
+      if (created) takeLayer(layer);
+      doc.active = created ? prevActive : layer;
+      rigChanged(layer);
+    };
+    apply();
+    history.push({ label: 'Add part', undo: unapply, redo: apply });
+    layersChanged();
+    closePanels();
+    rigSel = node.id;
+    if (state.tool !== 'rig') setTool('rig'); else refreshRigBar();
+    toast(`Added "${part.name}" in the middle. Under "Set up joints", drag it into place and attach it.`, 4000);
+  }
+
+  function renamePart(part) {
+    const name = prompt('Rename this part:', part.name);
+    if (name === null || !name.trim()) return;
+    part.name = name.trim().slice(0, 40);
+    buildPartsGrid();
+    refreshRigBar();
+    scheduleAutosave();
+  }
+  function deletePart(part) {
+    const users = doc.layers.filter((l) => l.rig && l.rig.nodes.some((n) => n.partId === part.id));
+    if (users.length && !confirm(`Delete "${part.name}"? It will also be taken off the puppet.`)) return;
+    const saved = users.map((l) => [l, clone(l.rig.nodes)]);
+    const apply = () => {
+      doc.parts.delete(part.id);
+      for (const [l] of saved) {
+        const gone = new Map(l.rig.nodes.filter((n) => n.partId === part.id).map((n) => [n.id, n.parent]));
+        l.rig.nodes = l.rig.nodes.filter((n) => !gone.has(n.id));
+        // Anything that hung from a removed part now hangs from what that part hung from.
+        for (const n of l.rig.nodes) { let guard = 0; while (n.parent && gone.has(n.parent) && guard++ < 50) n.parent = gone.get(n.parent); }
+      }
+      partsVersion++;
+      rigChangedAll();
+      buildPartsGrid();
+    };
+    const unapply = () => {
+      doc.parts.set(part.id, part);
+      for (const [l, nodes] of saved) l.rig.nodes = clone(nodes);
+      partsVersion++;
+      rigChangedAll();
+      buildPartsGrid();
+    };
+    apply();
+    rigSel = null;
+    history.push({ label: 'Delete part', undo: unapply, redo: apply });
+  }
+
+  function buildPartsGrid() {
+    const grid = $('#parts-grid');
+    grid.innerHTML = '';
+    $('#rig-make').textContent = selection ? 'Make a part from the selection' : 'Make a part from this layer';
+    $('#rig-remove').checked = state.rigRemove;
+    $('#rig-n').textContent = addFramesCount;
+    if (!doc.parts.size) {
+      grid.innerHTML = '<p class="parts-empty">No parts yet. Circle part of your drawing with Select, then tap the button above.</p>';
+      return;
+    }
+    for (const part of doc.parts.values()) {
+      const tile = document.createElement('button');
+      tile.className = 'part-tile';
+      tile.title = `Add "${part.name}" to the puppet`;
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(90 * DPR);
+      cv.height = Math.round(54 * DPR);
+      const g = cv.getContext('2d');
+      const k = Math.min(cv.width / part.canvas.width, cv.height / part.canvas.height, 2 * DPR) * 0.9;
+      const w = part.canvas.width * k, h = part.canvas.height * k;
+      g.drawImage(part.canvas, (cv.width - w) / 2, (cv.height - h) / 2, w, h);
+      const name = document.createElement('span');
+      name.className = 'pname';
+      name.textContent = part.name;
+      const tools = document.createElement('span');
+      tools.className = 'ptools';
+      const ren = document.createElement('button');
+      ren.textContent = '✎';
+      ren.title = 'Rename';
+      ren.addEventListener('click', (e) => { e.stopPropagation(); renamePart(part); });
+      const del = document.createElement('button');
+      del.textContent = '×';
+      del.title = 'Delete this part';
+      del.addEventListener('click', (e) => { e.stopPropagation(); deletePart(part); });
+      tools.append(ren, del);
+      tile.append(cv, name, tools);
+      tile.addEventListener('click', () => addPartToPuppet(part));
+      grid.appendChild(tile);
+    }
+  }
+  $('#rig-make').addEventListener('click', makePart);
+  $('#rig-remove').addEventListener('change', (e) => { state.rigRemove = e.target.checked; saveSettings(); });
+  $('#rig-n-minus').addEventListener('click', () => { addFramesCount = Math.max(1, addFramesCount - 1); $('#rig-n').textContent = addFramesCount; });
+  $('#rig-n-plus').addEventListener('click', () => { addFramesCount = Math.min(24, addFramesCount + 1); $('#rig-n').textContent = addFramesCount; });
+  // Add empty frames after this one: between two poses they become automatic in-betweens.
+  $('#rig-add-frames').addEventListener('click', () => {
+    if (busy() || partEdit) return;
+    stopPlay();
+    if (transform) applyTransform();
+    const n = addFramesCount;
+    if (doc.frames.length + n > MAX_FRAMES) { toast(`That would go past the limit of ${MAX_FRAMES} frames.`); return; }
+    const prev = doc.frame, index = frameIndex() + 1;
+    const added = Array.from({ length: n }, () => newFrame());
+    const apply = () => { doc.frames.splice(index, 0, ...added); doc.frame = prev; };
+    const unapply = () => { for (const f of added) doc.frames.splice(doc.frames.indexOf(f), 1); doc.frame = prev; };
+    apply();
+    history.push({ label: 'Add in-between frames', undo: unapply, redo: apply });
+    framesChanged();
+    rigChangedAll();
+    toast(`Added ${n} frames after frame ${index}. Between two poses they move by themselves.`);
+  });
+
+  // ---- Editing a part's drawing (it changes everywhere the part is used) ----
+  function startPartEdit(node) {
+    const rigLayer = activeRig();
+    const part = node && doc.parts.get(node.partId);
+    if (!rigLayer || !part || partEdit) return;
+    stopPlay();
+    closePanels();
+    setSelection(null);
+    const temp = newLayer(`Editing "${part.name}"`);
+    layerCounter--;
+    temp.static = true;
+    const c = makeCanvas(DOC_W, DOC_H);
+    c.getContext('2d').drawImage(part.canvas, Math.round(node.restX), Math.round(node.restY));
+    temp.cels.set('static', c);
+    doc.layers.push(temp);
+    partEdit = { node, part, layer: temp, rigLayer, prevTool: state.tool, histLen: history.undoStack.length,
+      x: Math.round(node.restX), y: Math.round(node.restY) };
+    doc.active = temp;
+    state.tool = 'brush';
+    syncUI();
+    $('#part-hint').textContent = `Editing "${part.name}": draw, erase or blend on it. The rest is hidden for now.`;
+    $('#part-bar').hidden = false;
+    refreshOnion();
+    requestRender();
+    drawUI();
+  }
+  function finishPartEdit(save) {
+    const pe = partEdit;
+    if (!pe) return;
+    partEdit = null;
+    takeLayer(pe.layer);
+    doc.active = doc.layers.includes(pe.rigLayer) ? pe.rigLayer : doc.layers[0];
+    // The individual strokes made while editing are replaced by one "Edit part" step.
+    history.undoStack.length = Math.min(history.undoStack.length, pe.histLen);
+    history.redoStack.length = 0;
+    $('#part-bar').hidden = true;
+    if (save) {
+      const cel = pe.layer.cels.get('static');
+      const bb = alphaBounds(cel.getContext('2d').getImageData(0, 0, DOC_W, DOC_H).data);
+      if (!bb) toast('The part was empty, so it wasn\'t changed.');
+      else {
+        const part = pe.part;
+        const fresh = makeCanvas(bb.w, bb.h);
+        fresh.getContext('2d').drawImage(cel, -bb.x, -bb.y);
+        const old = part.canvas;
+        const dx = bb.x - pe.x, dy = bb.y - pe.y;
+        // Every use of this part keeps its joint in the same place on the drawing.
+        const applyCanvas = (canvas, sx, sy) => {
+          part.canvas = canvas;
+          part.alpha = null;
+          for (const l of doc.layers) {
+            if (!l.rig) continue;
+            for (const n of l.rig.nodes) {
+              if (n.partId !== part.id) continue;
+              n.restX += sx; n.restY += sy; n.pivotX -= sx; n.pivotY -= sy;
+            }
+          }
+          partsVersion++;
+          rigChangedAll();
+          buildPartsGrid();
+        };
+        applyCanvas(fresh, dx, dy);
+        history.push({ label: 'Edit part', undo() { applyCanvas(old, -dx, -dy); }, redo() { applyCanvas(fresh, dx, dy); } });
+        toast(`"${part.name}" updated everywhere it's used.`);
+      }
+    }
+    state.tool = 'rig';
+    history.onChange();
+    syncUI();
+    layersChanged();
+    refreshOnion();
+    requestRender();
+    drawUI();
+  }
+  $('#pe-done').addEventListener('click', () => finishPartEdit(true));
+  $('#pe-cancel').addEventListener('click', () => finishPartEdit(false));
+
+  // ---------------------------------------------------------------------------
   // Keyboard shortcuts
   // ---------------------------------------------------------------------------
   window.addEventListener('keydown', (e) => {
@@ -3817,9 +4642,11 @@
     else if (k === '-') zoomBy(0.8);
     else if (k === 'v') setTool('transform');
     else if (k === 'l') setTool('select');
+    else if (k === 'r') setTool('rig');
     else if (k === 'enter' && transform) { applyTransform(); setTool(tfPrevTool); }
     else if (k === 'escape') {
       if ($$('.panel').some((x) => !x.hidden)) closePanels();
+      else if (rigAttach) { rigAttach = false; refreshRigBar(); }
       else if (transform) { cancelTransform(); setTool(tfPrevTool); }
       else if (selection) setSelection(null);
     }

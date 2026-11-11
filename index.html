@@ -43,6 +43,9 @@
       <button class="tb" data-tool="transform" title="Transform: move, resize or rotate (V)">
         <svg viewBox="0 0 24 24"><path d="M5 9 2 12l3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/></svg>
       </button>
+      <button class="tb" data-tool="rig" title="Rig: pose puppet parts (R). Tap again for your parts">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.5"/><path d="M12 7v7M12 14l-4 7M12 14l4 7M6 10l6-1 6 1"/><circle cx="12" cy="14" r="1.2" fill="currentColor"/></svg>
+      </button>
       <span class="tb-sep"></span>
       <button class="tb" id="btn-layers" data-panel="panel-layers" title="Layers">
         <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
@@ -62,6 +65,21 @@
       <canvas id="sel-overlay"></canvas>
     </div>
     <canvas id="ui-overlay"></canvas>
+    <!-- Shown while using the Rig tool -->
+    <div class="transform-bar rig-bar" id="rig-bar" hidden>
+      <div class="segmented two" id="rig-modes">
+        <button data-mode="pose" title="Bend parts at their joints and move the puppet">Pose</button>
+        <button data-mode="setup" title="Place joints and connect parts">Set up joints</button>
+      </div>
+      <span class="rig-hint" id="rig-hint"></span>
+      <span class="rig-actions" id="rig-actions"></span>
+    </div>
+    <!-- Shown while editing a part's drawing -->
+    <div class="transform-bar" id="part-bar" hidden>
+      <span class="rig-hint" id="part-hint"></span>
+      <button class="mini" id="pe-cancel">Cancel</button>
+      <button class="mini primary" id="pe-done">Done</button>
+    </div>
     <!-- Shown while transforming -->
     <div class="transform-bar" id="transform-bar" hidden>
       <button class="mini" id="tf-uniform" title="Keep the shape's proportions when resizing">Keep proportions</button>
@@ -350,6 +368,35 @@
     </div>
   </div>
 
+  <!-- ===== Pop-out panel: puppet parts (rigging) ===== -->
+  <div class="panel panel-wide" id="panel-rig" hidden>
+    <h2>Puppet parts</h2>
+    <button class="mini primary wide" id="rig-make">Make a part</button>
+    <label class="check"><input type="checkbox" id="rig-remove"> Take it out of the drawing</label>
+    <div class="parts-grid" id="parts-grid"></div>
+    <h2 class="gap">In-betweens</h2>
+    <p class="hint" style="margin-top:0">Pose the puppet on two frames: every frame between them moves by itself.
+      Need more in-betweens? Add frames after this one:</p>
+    <div class="stepper-row" style="margin-top:8px">
+      <div class="stepper">
+        <button class="mini" id="rig-n-minus">−</button>
+        <output id="rig-n">3</output>
+        <button class="mini" id="rig-n-plus">+</button>
+      </div>
+      <button class="mini" id="rig-add-frames">Add frames</button>
+    </div>
+    <h2 class="gap">How it works</h2>
+    <ol class="steps">
+      <li>Draw your character's parts (head, body, arms…) a little apart from each other.</li>
+      <li>Circle one part with <b>Select</b> and tap <b>Make a part</b>. Repeat for every part.</li>
+      <li>With the <b>Rig</b> tool, choose <b>Set up joints</b>: tap a part, drag its dot to the joint
+        (like the shoulder), tap <b>Attach to…</b> and then tap the part it hangs from.</li>
+      <li>Choose <b>Pose</b>. On a frame, drag parts to bend them. Go to a later frame and pose again:
+        the frames between move smoothly by themselves (◆ marks your poses).</li>
+      <li>To change a part's drawing everywhere, select it and tap <b>Edit drawing</b>.</li>
+    </ol>
+  </div>
+
   <!-- ===== Pop-out panel: menu ===== -->
   <div class="panel" id="panel-menu" hidden>
     <div class="brand brand-menu" aria-hidden="true"><span>P</span><span>l</span><span>a</span><span>y</span><span>g</span><span>r</span><span>o</span><span>u</span><span>n</span><span>d</span></div>
@@ -473,6 +520,7 @@
   <script src="js/quickshape.js"></script>
   <script src="js/storage.js"></script>
   <script src="js/audio.js"></script>
+  <script src="js/rig.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

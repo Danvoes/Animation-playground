@@ -564,3 +564,41 @@ input[type=range] { accent-color: var(--accent); height: 28px; margin: 0; }
 .tl-controls { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
 .tl-controls input[type=range] { flex: 1; }
 #tl-pos { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 70px; text-align: right; }
+
+/* ============ Rigging ============ */
+.rig-bar { align-items: center; max-width: min(860px, calc(100% - 20px)); }
+.rig-bar .segmented { margin: 0; width: 230px; }
+.rig-hint { font-size: 12px; color: var(--muted); max-width: 300px; line-height: 1.35; align-self: center; }
+.rig-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.rig-actions .mini { height: 32px; }
+.parts-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 10px 0 4px; }
+.part-tile {
+  position: relative; display: flex; flex-direction: column; gap: 3px; padding: 5px;
+  border: 1px solid var(--border); border-radius: 10px; background: transparent; color: inherit;
+  font: inherit; font-size: 11px; cursor: pointer; text-align: left;
+}
+.part-tile:hover { background: var(--accent-soft); }
+.part-tile canvas { width: 100%; height: 54px; border-radius: 6px; background: #fff; display: block; }
+.part-tile .pname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.part-tile .ptools { position: absolute; top: 3px; right: 3px; display: flex; gap: 2px; }
+.part-tile .ptools button {
+  width: 22px; height: 22px; border: 0; border-radius: 5px; padding: 0;
+  background: rgba(255, 255, 255, .9); color: #333; cursor: pointer; font-size: 12px; line-height: 22px;
+}
+.parts-empty { grid-column: 1 / -1; font-size: 12px; color: var(--muted); margin: 0; }
+.steps { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.steps li + li { margin-top: 4px; }
+.frame-cell .key { color: #f5a524; margin-left: 2px; }
+#stage.rigging { cursor: grab; }
+
+/* Phones: keep every tool reachable in the top bar. */
+@media (max-width: 480px) {
+  .topbar { padding: 0 4px; gap: 2px; }
+  .topbar .tb { width: 34px; flex: none; }
+  .topbar [data-tool="eyedropper"] { display: none; } /* still in the Color panel, or touch and hold */
+  .topbar > .group:last-child {
+    min-width: 0; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .topbar > .group:last-child::-webkit-scrollbar { display: none; }
+  .topbar > .group:first-child { flex: none; }
+}
