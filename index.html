@@ -34,7 +34,7 @@
         <svg viewBox="0 0 24 24"><path d="M12 2 2 7l10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg>
         <span class="tb-badge" id="layers-badge"></span>
       </button>
-      <button class="tb" id="btn-color" data-panel="panel-color" title="Color">
+      <button class="tb" id="btn-color" data-panel="panel-color" title="Color. Drag it onto the canvas to fill an area">
         <span class="swatch" id="color-swatch"></span>
       </button>
     </div>
@@ -60,7 +60,11 @@
       </button>
     </aside>
     <div class="bubble" id="bubble"></div>
+    <!-- Color-pick ring: top half = new color, bottom half = previous color -->
+    <div id="loupe"></div>
   </main>
+  <!-- The dot you drag from the color button to fill an area -->
+  <div id="drop-dot"></div>
 
   <!-- ===== Timeline: playback and frames ===== -->
   <footer class="timeline">
@@ -78,9 +82,9 @@
         <svg viewBox="0 0 24 24"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg>
         <span>Onion skin</span>
       </button>
-      <button class="btn btn-narrow" id="btn-onion-settings" data-panel="panel-onion" title="Onion skin settings">
+      <button class="btn btn-narrow" id="btn-onion-settings" data-panel="panel-onion" title="Playback mode and onion skin settings">
         <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg>
-        <span>More</span>
+        <span>Options</span>
       </button>
     </div>
 
@@ -217,11 +221,24 @@
     <label class="check"><input type="checkbox" id="m-finger"> Draw with finger</label>
     <p class="hint">When a stylus is detected, finger drawing turns off automatically, so your palm won't leave marks.
       Fingers can still zoom, rotate and undo.</p>
+    <h2 class="gap">Drawing helpers</h2>
+    <label class="check"><input type="checkbox" id="m-quickshape"> QuickShape</label>
+    <p class="hint">Draw a line, circle, ellipse, rectangle or triangle, then keep your pen down and
+      hold still for a moment. It snaps into a clean shape.</p>
+    <div class="field">
+      <label for="m-fill">Fill gaps</label>
+      <input type="range" id="m-fill" min="0" max="60">
+      <output id="m-fill-out"></output>
+    </div>
+    <p class="hint">To fill an area, drag the color circle from the top bar onto it. A higher value
+      lets the fill spread into similar colors too.</p>
     <h2 class="gap">Gestures</h2>
     <ul class="gesture-list">
       <li><b>Pinch with two fingers</b> to zoom, rotate and move the canvas</li>
       <li><b>Tap with two fingers</b> to undo</li>
       <li><b>Tap with three fingers</b> to redo</li>
+      <li><b>Touch and hold with a finger</b> to pick a color (when finger drawing is off)</li>
+      <li><b>Alt + click</b> (Option + click on Mac) to pick a color</li>
       <li><b>Mouse wheel</b> to zoom, <b>Shift + wheel</b> to rotate</li>
       <li><b>Right-click and drag</b> to move the canvas</li>
     </ul>
@@ -231,7 +248,13 @@
 
   <!-- ===== Pop-out panel: onion skin settings ===== -->
   <div class="panel" id="panel-onion" hidden>
-    <h2>Onion skin</h2>
+    <h2>Playback</h2>
+    <div class="segmented" id="play-modes">
+      <button data-mode="loop" title="Start again from the first frame">Loop</button>
+      <button data-mode="pingpong" title="Play forward, then backward, and repeat">Ping-pong</button>
+      <button data-mode="once" title="Play once and stop on the last frame">Once</button>
+    </div>
+    <h2 class="gap">Onion skin</h2>
     <div class="field">
       <label for="o-prev">Before</label>
       <input type="range" id="o-prev" min="0" max="3">
@@ -251,6 +274,28 @@
       Layers set to "same on every frame" aren't shown.</p>
   </div>
 
+  <!-- ===== Pop-out panel: options for one frame (tap the selected frame) ===== -->
+  <div class="panel" id="panel-frame" hidden>
+    <h2 id="pf-title">Frame</h2>
+    <div class="stepper-row">
+      <span>Hold for</span>
+      <div class="stepper">
+        <button class="mini" id="pf-hold-minus" title="Shorter">−</button>
+        <output id="pf-hold">1</output>
+        <button class="mini" id="pf-hold-plus" title="Longer">+</button>
+      </div>
+      <span id="pf-hold-unit">beat</span>
+    </div>
+    <p class="hint">How long this frame stays on screen when playing. 1 beat = one frame at the current speed.</p>
+    <div class="mini-grid" style="margin-top:12px">
+      <button class="mini" id="pf-left">◀ Move earlier</button>
+      <button class="mini" id="pf-right">Move later ▶</button>
+      <button class="mini" id="pf-dup">Duplicate</button>
+      <button class="mini danger" id="pf-del">Delete</button>
+    </div>
+    <p class="hint">Tip: you can also drag frames to reorder them (on touch screens, touch and hold first).</p>
+  </div>
+
   <!-- ===== Pop-out panel: color wheel ===== -->
   <div class="panel" id="panel-color" hidden>
     <h2>Color</h2>
@@ -263,6 +308,7 @@
   <script src="js/history.js"></script>
   <script src="js/brushes.js"></script>
   <script src="js/blendtool.js"></script>
+  <script src="js/quickshape.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

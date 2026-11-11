@@ -60,11 +60,11 @@
   // A short message that pops up at the bottom of the screen.
   const toastEl = $('#toast');
   let toastTimer = null;
-  function toast(msg) {
+  function toast(msg, ms) {
     toastEl.textContent = msg;
     toastEl.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2800);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms || 2800);
   }
 
   // ---------------------------------------------------------------------------
@@ -86,7 +86,8 @@
       blend: 'source-over',
     };
   }
-  const newFrame = () => ({ id: 'f' + (++frameIds) });
+  // hold = how many beats the frame stays on screen during playback.
+  const newFrame = () => ({ id: 'f' + (++frameIds), hold: 1 });
 
   const activeLayer = () => doc.active;
   const layerIndex = (layer) => doc.layers.indexOf(layer);
@@ -166,6 +167,9 @@
     blend: Object.assign({ mode: 'smudge', size: 40, strength: 50, smoothing: 20 }, saved.blend || {}),
     onion: Object.assign({ enabled: true, prev: 1, next: 0, opacity: 35 }, saved.onion || {}),
     fingerDraw: saved.fingerDraw !== false,
+    quickShape: saved.quickShape !== false,
+    fillGap: saved.fillGap != null ? saved.fillGap : 12,
+    playMode: ['loop', 'pingpong', 'once'].includes(saved.playMode) ? saved.playMode : 'loop',
   };
   Brushes.ORDER.forEach((t) => {
     state.brushes[t] = Object.assign({}, Brushes.TYPES[t].defaults, (saved.brushes || {})[t] || {});
@@ -177,6 +181,7 @@
       brushes: state.brushes, eraser: state.eraser, blend: state.blend,
       onion: state.onion, fps: doc.fps,
       fingerDraw: state.fingerDraw, stylusSeen: typeof stylusSeen !== 'undefined' && stylusSeen,
+      quickShape: state.quickShape, fillGap: state.fillGap, playMode: state.playMode,
     });
   }
   let recent = store.get('ap.recentColors.v1', []);
@@ -456,6 +461,11 @@
   let tapSession = null;     // used to spot two- and three-finger taps
   let panDrag = null;        // right-click drag to move the canvas
   let stylusSeen = !!saved.stylusSeen;
+  let picking = null;        // 'tool' (Pick color tool) or 'temp' (Alt-click / touch and hold)
+  let pickPrev = null;       // the color before picking started
+  let holdPickTimer = null;
+  // QuickShape
+  let strokeOpts = null, strokePts = [], snapped = false, holdTimer = null, holdAt = null;
 
   // Palm rejection: the first time a stylus is used, finger drawing turns off.
   function noticeStylus() {
@@ -476,7 +486,67 @@
     smooth.x += (p.x - smooth.x) * k;
     smooth.y += (p.y - smooth.y) * k;
     smooth.pressure += (p.pressure - smooth.pressure) * Math.min(1, k * 1.5);
-    (stroke || blendStroke).moveTo({ x: smooth.x, y: smooth.y, pressure: smooth.pressure });
+    const q = { x: smooth.x, y: smooth.y, pressure: smooth.pressure };
+    if (stroke) strokePts.push(q);
+    (stroke || blendStroke).moveTo(q);
+  }
+
+  // ---- Picking a color (Pick color tool, Alt-click, or touch and hold) ----
+  const loupe = $('#loupe');
+  function beginPick(e, mode) {
+    activePointer = e.pointerId;
+    picking = mode;
+    pickPrev = state.color;
+    try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+    pickAt(e);
+  }
+  function pickAt(e) {
+    pickColor(toDoc(e));
+    const sr = stage.getBoundingClientRect();
+    const x = e.clientX - sr.left;
+    let y = e.clientY - sr.top - 80; // above your finger so you can see it
+    if (y < 50) y += 160;
+    loupe.style.left = x + 'px';
+    loupe.style.top = y + 'px';
+    loupe.style.borderColor = `${state.color} ${state.color} ${pickPrev} ${pickPrev}`;
+    loupe.style.display = 'block';
+    cursorEl.style.display = 'none';
+  }
+  function endPick(keep) {
+    const mode = picking;
+    picking = null;
+    activePointer = null;
+    loupe.style.display = 'none';
+    if (keep === false) picker.setHex(pickPrev);
+    else addRecent(state.color);
+    if (mode === 'tool') setTool(state.prevTool || 'brush');
+  }
+
+  // ---- QuickShape: hold still at the end of a stroke to snap it to a clean shape ----
+  function armHold(e) {
+    clearTimeout(holdTimer);
+    holdAt = { x: e.clientX, y: e.clientY };
+    holdTimer = setTimeout(trySnap, 550);
+  }
+  function trySnap() {
+    if (!stroke || snapped || !state.quickShape) return;
+    const shape = QuickShape.detect(strokePts);
+    if (!shape) return;
+    let pr = 0;
+    for (const q of strokePts) pr += q.pressure;
+    pr /= strokePts.length;
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.clearRect(0, 0, DOC_W, DOC_H);
+    const s2 = Brushes.createStroke(strokeOpts);
+    shape.points.forEach((q, i) => {
+      const pt = { x: q.x, y: q.y, pressure: pr };
+      if (i === 0) s2.begin(pt); else s2.moveTo(pt);
+    });
+    s2.needsTick = false;
+    stroke = s2;
+    snapped = true;
+    toast(shape.name, 1200);
+    requestRender();
   }
 
   function startDrawing(e) {
@@ -484,10 +554,10 @@
     if (playing) { stopPlay(); return; }
     const p = toDoc(e);
 
-    if (state.tool === 'eyedropper') {
-      activePointer = e.pointerId;
-      try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-      pickColor(p);
+    // Pick color tool, or Alt/Option + click with a mouse or stylus.
+    const altPick = e.altKey && e.pointerType !== 'touch';
+    if (state.tool === 'eyedropper' || altPick) {
+      beginPick(e, state.tool === 'eyedropper' ? 'tool' : 'temp');
       return;
     }
 
@@ -517,7 +587,7 @@
 
     const isEraser = state.tool === 'eraser';
     strokeTarget = { layer, cel: null };
-    stroke = Brushes.createStroke({
+    strokeOpts = {
       type: isEraser ? 'eraser' : state.brushType,
       ctx: bctx,
       color: state.color,
@@ -525,13 +595,19 @@
       opacity: st.opacity / 100,
       softness: isEraser ? st.softness / 100 : 0,
       pressure: state.pressure,
-    });
-    stroke.begin({ x: p.x, y: p.y, pressure: p.pressure });
+    };
+    stroke = Brushes.createStroke(strokeOpts);
+    const first = { x: p.x, y: p.y, pressure: p.pressure };
+    strokePts = [first];
+    snapped = false;
+    stroke.begin(first);
+    armHold(e);
     requestRender();
   }
 
   // Throw away the stroke in progress (used when a second finger lands).
   function abortStroke() {
+    clearTimeout(holdTimer);
     if (stroke) {
       stroke = null;
       bctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -549,15 +625,12 @@
 
   function finishPointer(e) {
     if (e.pointerId !== activePointer) return;
+    if (picking) { endPick(); return; }
     activePointer = null;
-    if (state.tool === 'eyedropper') {
-      addRecent(state.color);
-      setTool(state.prevTool || 'brush');
-      return;
-    }
+    clearTimeout(holdTimer);
     if (!busy()) return;
     // Let the smoothed line catch up to where you actually stopped.
-    if (lastRaw && strokeSmoothing > 0) {
+    if (lastRaw && strokeSmoothing > 0 && !snapped) {
       for (let i = 0; i < 40 && Math.hypot(lastRaw.x - smooth.x, lastRaw.y - smooth.y) > 0.5; i++) feed(lastRaw);
     }
     if (tapSession) tapSession.drew = true; // a real stroke isn't an undo tap
@@ -624,9 +697,11 @@
       try { stage.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
       if (!tapSession) tapSession = { start: performance.now(), max: 0, moved: false, drew: false };
       tapSession.max = Math.max(tapSession.max, touches.size);
+      clearTimeout(holdPickTimer);
       if (touches.size === 2) {
         // A second finger means a gesture, not drawing. If the first finger
         // only just started a stroke, throw it away; otherwise keep it.
+        if (picking) endPick(false);
         if (activePointer !== null) {
           if (busy() && performance.now() - strokeStart > 300) finishPointer({ pointerId: activePointer });
           else abortStroke();
@@ -634,6 +709,13 @@
         startGesture();
       } else if (touches.size === 1 && state.fingerDraw) {
         startDrawing(e);
+      } else if (touches.size === 1) {
+        // Finger drawing is off: touch and hold to pick a color.
+        holdPickTimer = setTimeout(() => {
+          if (touches.size === 1 && tapSession && !tapSession.moved && !gesture && activePointer === null) {
+            beginPick(e, 'temp');
+          }
+        }, 450);
       }
       return;
     }
@@ -667,8 +749,10 @@
     }
     updateCursor(e);
     if (e.pointerId !== activePointer) return;
-    if (state.tool === 'eyedropper') { pickColor(toDoc(e)); return; }
+    if (picking) { pickAt(e); return; }
     if (!busy()) return;
+    if (snapped) return; // the shape is done; lift to keep it
+    if (stroke && (!holdAt || Math.hypot(e.clientX - holdAt.x, e.clientY - holdAt.y) > 4)) armHold(e);
     const sr = stage.getBoundingClientRect();
     const list = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
     const events = list.length ? list : [e];
@@ -689,6 +773,7 @@
     }
     if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
       touches.delete(e.pointerId);
+      clearTimeout(holdPickTimer);
       if (gesture && touches.size < 2) endGesture();
       finishPointer(e);
       if (touches.size === 0 && tapSession) {
@@ -752,6 +837,121 @@
     requestRender();
   }
 
+  // ---- Color fill: drag the color circle onto an area ----
+  // The fill looks at everything you can see on this frame (all visible
+  // layers) to find the edges, and paints onto the selected layer.
+  const fillCanvas = makeCanvas(DOC_W, DOC_H), fctx = fillCanvas.getContext('2d');
+  function fillAt(p) {
+    const layer = activeLayer();
+    if (!canEdit(layer)) return;
+    const x0 = Math.floor(p.x), y0 = Math.floor(p.y);
+    if (x0 < 0 || y0 < 0 || x0 >= DOC_W || y0 >= DOC_H) return;
+    stopPlay();
+    drawFrame(fctx, doc.frame, { transparent: true });
+    const src = fctx.getImageData(0, 0, DOC_W, DOC_H).data;
+    const W = DOC_W, H = DOC_H;
+    const tol = (state.fillGap / 100) * 255;
+    const i0 = (y0 * W + x0) * 4;
+    const tr = src[i0], tg = src[i0 + 1], tb = src[i0 + 2], ta = src[i0 + 3];
+    const same = (i) => {
+      const a = src[i + 3];
+      if (Math.abs(a - ta) > tol) return false;
+      if (a < 8 && ta < 8) return true; // both see-through
+      return Math.abs(src[i] - tr) <= tol && Math.abs(src[i + 1] - tg) <= tol && Math.abs(src[i + 2] - tb) <= tol;
+    };
+    const mask = new Uint8Array(W * H);
+    const stack = [x0, y0];
+    while (stack.length) {
+      const y = stack.pop(), x = stack.pop();
+      let l = x;
+      while (l >= 0 && !mask[y * W + l] && same((y * W + l) * 4)) l--;
+      l++;
+      let up = false, down = false;
+      for (let r = l; r < W && !mask[y * W + r] && same((y * W + r) * 4); r++) {
+        mask[y * W + r] = 1;
+        if (y > 0) {
+          const ok = !mask[(y - 1) * W + r] && same(((y - 1) * W + r) * 4);
+          if (ok && !up) { stack.push(r, y - 1); up = true; } else if (!ok) up = false;
+        }
+        if (y < H - 1) {
+          const ok = !mask[(y + 1) * W + r] && same(((y + 1) * W + r) * 4);
+          if (ok && !down) { stack.push(r, y + 1); down = true; } else if (!ok) down = false;
+        }
+      }
+    }
+    // Grow the fill by 1 pixel so it tucks under soft line edges (no white halo).
+    let minX = W, minY = H, maxX = -1, maxY = -1;
+    const grown = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = y * W + x;
+        if (mask[i] || (x > 0 && mask[i - 1]) || (x < W - 1 && mask[i + 1]) ||
+            (y > 0 && mask[i - W]) || (y < H - 1 && mask[i + W])) {
+          grown[i] = 1;
+          if (x < minX) minX = x; if (x > maxX) maxX = x;
+          if (y < minY) minY = y; if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < 0) return;
+    const rect = { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+    const rgb = Color.hexToRgb(state.color);
+    const img = new ImageData(rect.w, rect.h);
+    for (let y = 0; y < rect.h; y++) {
+      for (let x = 0; x < rect.w; x++) {
+        if (!grown[(rect.y + y) * W + rect.x + x]) continue;
+        const o = (y * rect.w + x) * 4;
+        img.data[o] = rgb[0]; img.data[o + 1] = rgb[1]; img.data[o + 2] = rgb[2]; img.data[o + 3] = 255;
+      }
+    }
+    fctx.clearRect(0, 0, W, H);
+    fctx.putImageData(img, rect.x, rect.y);
+    const cel = ensureCel(layer, doc.frame);
+    const ctx = cel.getContext('2d');
+    const before = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
+    ctx.drawImage(fillCanvas, 0, 0);
+    const after = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
+    pushPixelStep('Fill', layer, cel, rect, before, after);
+    addRecent(state.color);
+    requestRender();
+  }
+
+  // Dragging from the color button
+  const colorBtn = $('#btn-color');
+  const dropDot = $('#drop-dot');
+  let colorDrag = null, suppressColorClick = false;
+  colorBtn.addEventListener('pointerdown', (e) => {
+    suppressColorClick = false;
+    colorDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, active: false };
+    try { colorBtn.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+  });
+  colorBtn.addEventListener('pointermove', (e) => {
+    if (!colorDrag || e.pointerId !== colorDrag.id) return;
+    if (!colorDrag.active && Math.hypot(e.clientX - colorDrag.x, e.clientY - colorDrag.y) > 10) {
+      colorDrag.active = true;
+      closePanels();
+      dropDot.style.background = state.color;
+      dropDot.style.display = 'block';
+    }
+    if (colorDrag.active) {
+      dropDot.style.left = e.clientX + 'px';
+      dropDot.style.top = e.clientY + 'px';
+    }
+  });
+  function endColorDrag(e, cancelled) {
+    if (!colorDrag || e.pointerId !== colorDrag.id) return;
+    const d = colorDrag;
+    colorDrag = null;
+    dropDot.style.display = 'none';
+    if (!d.active) return;
+    suppressColorClick = true;
+    if (cancelled) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (el && el.closest('#stage') && !el.closest('.sidebar')) fillAt(toDoc(e));
+  }
+  colorBtn.addEventListener('pointerup', (e) => endColorDrag(e, false));
+  colorBtn.addEventListener('pointercancel', (e) => endColorDrag(e, true));
+
   function pickColor(p) {
     const x = clamp(Math.floor(p.x), 0, DOC_W - 1);
     const y = clamp(Math.floor(p.y), 0, DOC_H - 1);
@@ -793,9 +993,21 @@
       canvas.width = Math.round(88 * DPR);
       canvas.height = Math.round(50 * DPR);
       const label = document.createElement('span');
-      label.textContent = i + 1;
+      label.className = 'frame-label';
       btn.append(canvas, label);
-      btn.addEventListener('click', () => { stopPlay(); goFrame(f); });
+      btn.addEventListener('click', () => {
+        if (suppressFrameClick) { suppressFrameClick = false; return; }
+        stopPlay();
+        if (f === doc.frame) {
+          // Tap the selected frame again for its options.
+          const panel = $('#panel-frame');
+          if (panel.hidden) openPanel(panel, btn); else closePanels();
+        } else {
+          closePanels();
+          goFrame(f);
+        }
+      });
+      btn.dataset.index = i;
       strip.appendChild(btn);
       cells.set(f, { btn, canvas });
     });
@@ -808,7 +1020,21 @@
     const i = frameIndex();
     $('#frame-counter').textContent = `${i + 1} / ${doc.frames.length}`;
     $('#f-del').disabled = doc.frames.length <= 1;
-    cells.forEach((cell, f) => cell.btn.classList.toggle('active', f === doc.frame));
+    cells.forEach((cell, f) => {
+      cell.btn.classList.toggle('active', f === doc.frame);
+      const hold = f.hold || 1;
+      const label = cell.btn.querySelector('.frame-label');
+      label.innerHTML = '';
+      label.append(String(doc.frames.indexOf(f) + 1));
+      if (hold > 1) {
+        const h = document.createElement('span');
+        h.className = 'hold';
+        h.textContent = ` ×${hold}`;
+        label.append(h);
+      }
+      cell.btn.title = `Frame ${doc.frames.indexOf(f) + 1}` + (hold > 1 ? ` (held for ${hold} beats)` : '');
+    });
+    if (!$('#panel-frame').hidden) refreshFramePanel();
     // Keep the current frame scrolled into view.
     const cell = cells.get(doc.frame);
     if (cell) {
@@ -882,6 +1108,7 @@
     if (busy()) return;
     stopPlay();
     const frame = newFrame();
+    frame.hold = doc.frame.hold || 1;
     const copies = [];
     for (const layer of doc.layers) {
       const cel = layer.cels.get(doc.frame.id);
@@ -908,17 +1135,146 @@
     toast(`Deleted frame ${index + 1}. Press Undo to bring it back.`);
   });
 
+  // Move a frame to a new position (undoable).
+  function moveFrameStep(frame, to) {
+    const from = doc.frames.indexOf(frame);
+    to = clamp(to, 0, doc.frames.length - 1);
+    if (busy() || from < 0 || to === from) return;
+    stopPlay();
+    const move = (a, b) => { doc.frames.splice(a, 1); doc.frames.splice(b, 0, frame); };
+    move(from, to);
+    doc.frame = frame;
+    history.push({
+      label: 'Move frame',
+      frame,
+      undo() { move(to, from); },
+      redo() { move(from, to); },
+    });
+    framesChanged();
+  }
+
+  // How many beats a frame stays on screen (undoable).
+  function setHold(frame, value) {
+    const old = frame.hold || 1;
+    value = clamp(value, 1, 24);
+    if (value === old) return;
+    frame.hold = value;
+    history.push({
+      label: 'Frame hold',
+      frame,
+      undo() { frame.hold = old; },
+      redo() { frame.hold = value; },
+    });
+    updateFrameUI();
+  }
+
+  // Frame options panel (tap the selected frame)
+  function refreshFramePanel() {
+    const i = frameIndex();
+    const hold = doc.frame.hold || 1;
+    $('#pf-title').textContent = `Frame ${i + 1}`;
+    $('#pf-hold').textContent = hold;
+    $('#pf-hold-unit').textContent = hold === 1 ? 'beat' : 'beats';
+    $('#pf-hold-minus').disabled = hold <= 1;
+    $('#pf-hold-plus').disabled = hold >= 24;
+    $('#pf-left').disabled = i <= 0;
+    $('#pf-right').disabled = i >= doc.frames.length - 1;
+    $('#pf-del').disabled = doc.frames.length <= 1;
+  }
+  $('#pf-hold-minus').addEventListener('click', () => setHold(doc.frame, (doc.frame.hold || 1) - 1));
+  $('#pf-hold-plus').addEventListener('click', () => setHold(doc.frame, (doc.frame.hold || 1) + 1));
+  $('#pf-left').addEventListener('click', () => { moveFrameStep(doc.frame, frameIndex() - 1); reopenFramePanel(); });
+  $('#pf-right').addEventListener('click', () => { moveFrameStep(doc.frame, frameIndex() + 1); reopenFramePanel(); });
+  $('#pf-dup').addEventListener('click', () => { closePanels(); $('#f-dup').click(); });
+  $('#pf-del').addEventListener('click', () => { closePanels(); $('#f-del').click(); });
+  // After moving, the frame's button has moved too, so reopen the panel next to it.
+  function reopenFramePanel() {
+    const cell = cells.get(doc.frame);
+    if (cell) openPanel($('#panel-frame'), cell.btn);
+  }
+
+  // Drag frames to reorder them. Mouse/stylus: just drag.
+  // Touch: touch and hold first (so a normal swipe still scrolls the strip).
+  let frameDrag = null, suppressFrameClick = false;
+  const dropMarker = document.createElement('div');
+  dropMarker.className = 'drop-marker';
+  strip.addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest('.frame-cell');
+    if (!btn || playing) return;
+    suppressFrameClick = false;
+    frameDrag = { btn, frame: doc.frames[+btn.dataset.index], id: e.pointerId, x: e.clientX, y: e.clientY,
+      type: e.pointerType, active: false, timer: null, to: null };
+    if (e.pointerType === 'touch') {
+      frameDrag.timer = setTimeout(() => { if (frameDrag && !frameDrag.active) beginFrameDrag(); }, 380);
+    }
+  });
+  function beginFrameDrag() {
+    frameDrag.active = true;
+    closePanels();
+    frameDrag.btn.classList.add('dragging');
+    try { strip.setPointerCapture(frameDrag.id); } catch (_) { /* ignore */ }
+    if (navigator.vibrate) navigator.vibrate(10);
+  }
+  strip.addEventListener('pointermove', (e) => {
+    if (!frameDrag || e.pointerId !== frameDrag.id) return;
+    if (!frameDrag.active) {
+      if (Math.hypot(e.clientX - frameDrag.x, e.clientY - frameDrag.y) > 8) {
+        if (frameDrag.type === 'touch') { clearTimeout(frameDrag.timer); frameDrag = null; return; } // it's a scroll
+        beginFrameDrag();
+      } else return;
+    }
+    // Scroll the strip when dragging near its edges.
+    const sr = strip.getBoundingClientRect();
+    if (e.clientX < sr.left + 30) strip.scrollLeft -= 12;
+    else if (e.clientX > sr.right - 30) strip.scrollLeft += 12;
+    // Work out where the frame would land, and show a marker there.
+    const btns = [...strip.querySelectorAll('.frame-cell')];
+    let slot = btns.length;
+    for (let i = 0; i < btns.length; i++) {
+      const r = btns[i].getBoundingClientRect();
+      if (e.clientX < r.left + r.width / 2) { slot = i; break; }
+    }
+    const from = doc.frames.indexOf(frameDrag.frame);
+    frameDrag.to = slot > from ? slot - 1 : slot;
+    const ref = btns[Math.min(slot, btns.length - 1)];
+    const left = slot < btns.length ? ref.offsetLeft - 4 : ref.offsetLeft + ref.offsetWidth + 1;
+    dropMarker.style.left = left + 'px';
+    if (!dropMarker.parentNode) strip.appendChild(dropMarker);
+  });
+  function endFrameDrag(e, cancelled) {
+    if (!frameDrag || e.pointerId !== frameDrag.id) return;
+    const d = frameDrag;
+    frameDrag = null;
+    clearTimeout(d.timer);
+    if (!d.active) return;
+    suppressFrameClick = true;
+    setTimeout(() => { suppressFrameClick = false; }, 0);
+    d.btn.classList.remove('dragging');
+    dropMarker.remove();
+    if (!cancelled && d.to != null) moveFrameStep(d.frame, d.to);
+  }
+  strip.addEventListener('pointerup', (e) => endFrameDrag(e, false));
+  strip.addEventListener('pointercancel', (e) => endFrameDrag(e, true));
+  // While dragging a frame on a touch screen, don't scroll the strip.
+  strip.addEventListener('touchmove', (e) => { if (frameDrag && frameDrag.active) e.preventDefault(); }, { passive: false });
+  strip.addEventListener('contextmenu', (e) => e.preventDefault());
+
   // ---------------------------------------------------------------------------
   // Playback
   // ---------------------------------------------------------------------------
   let playing = false;
   let lastTick = 0, elapsed = 0;
+  let playDir = 1, beatsLeft = 1;
 
   function startPlay() {
     if (playing || busy()) return;
     if (doc.frames.length < 2) { toast('Add more frames to play an animation.'); return; }
     closePanels();
+    // "Once" starts from the beginning if you're on the last frame.
+    if (state.playMode === 'once' && frameIndex() === doc.frames.length - 1) goFrame(doc.frames[0]);
     playing = true;
+    playDir = 1;
+    beatsLeft = doc.frame.hold || 1;
     elapsed = 0;
     lastTick = performance.now();
     cursorEl.style.display = 'none';
@@ -926,17 +1282,32 @@
     refreshOnion();
     requestAnimationFrame(playTick);
   }
+  // Go to the next frame according to the playback mode.
+  function advance() {
+    const n = doc.frames.length;
+    let i = frameIndex();
+    if (state.playMode === 'loop') i = (i + 1) % n;
+    else if (state.playMode === 'pingpong') {
+      if (i + playDir >= n || i + playDir < 0) playDir = -playDir;
+      i += playDir;
+    } else {
+      if (i + 1 >= n) { stopPlay(); return; }
+      i++;
+    }
+    goFrame(doc.frames[i]);
+    beatsLeft = doc.frames[i].hold || 1;
+  }
   function playTick(t) {
     if (!playing) return;
     elapsed = Math.min(elapsed + (t - lastTick), 1000);
     lastTick = t;
-    const dur = 1000 / doc.fps;
-    if (elapsed >= dur) {
-      const steps = Math.floor(elapsed / dur);
-      elapsed -= steps * dur;
-      goFrame(doc.frames[(frameIndex() + steps) % doc.frames.length]);
+    const beat = 1000 / doc.fps;
+    while (playing && elapsed >= beat) {
+      elapsed -= beat;
+      beatsLeft--;
+      if (beatsLeft <= 0) advance();
     }
-    requestAnimationFrame(playTick);
+    if (playing) requestAnimationFrame(playTick);
   }
   function stopPlay() {
     if (!playing) return;
@@ -978,6 +1349,19 @@
   onionInput('o-prev', 'prev');
   onionInput('o-next', 'next');
   onionInput('o-opacity', 'opacity');
+  $$('#play-modes button').forEach((b) => b.addEventListener('click', () => {
+    state.playMode = b.dataset.mode;
+    saveSettings();
+    syncUI();
+  }));
+
+  // Menu: drawing helpers
+  $('#m-quickshape').addEventListener('change', (e) => { state.quickShape = e.target.checked; saveSettings(); });
+  $('#m-fill').addEventListener('input', (e) => {
+    state.fillGap = +e.target.value;
+    $('#m-fill-out').textContent = state.fillGap + '%';
+    saveSettings();
+  });
 
   // ---------------------------------------------------------------------------
   // Layers panel
@@ -1379,6 +1763,7 @@
     if (panel.id === 'panel-layers') buildLayerList();
     if (panel.id === 'panel-brush') drawBrushPreviews();
     if (panel.id === 'panel-color') picker.markPrevious();
+    if (panel.id === 'panel-frame') refreshFramePanel();
     const r = anchor.getBoundingClientRect();
     const left = clamp(r.left, 8, Math.max(8, window.innerWidth - panel.offsetWidth - 8));
     panel.style.left = left + 'px';
@@ -1396,13 +1781,15 @@
   }
   $$('[data-panel]').forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (btn === colorBtn && suppressColorClick) { suppressColorClick = false; return; }
       const panel = document.getElementById(btn.dataset.panel);
       if (panel.hidden) openPanel(panel, btn); else closePanels();
     });
   });
   // Tapping anywhere outside a panel closes it.
   document.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.panel') || e.target.closest('[data-panel]') || e.target.closest('[data-tool]')) return;
+    if (e.target.closest('.panel') || e.target.closest('[data-panel]') || e.target.closest('[data-tool]') ||
+        e.target.closest('.frame-cell')) return;
     closePanels();
   }, true);
 
@@ -1492,6 +1879,10 @@
     $('#s-size').title = `${label} size`;
     $('#s-opacity').title = tool === 'blend' ? 'Blend strength' : `${label} opacity`;
     $('#m-finger').checked = state.fingerDraw;
+    $('#m-quickshape').checked = state.quickShape;
+    $('#m-fill').value = state.fillGap;
+    $('#m-fill-out').textContent = state.fillGap + '%';
+    $$('#play-modes button').forEach((b) => b.classList.toggle('active', b.dataset.mode === state.playMode));
 
     const b = state.brushes[state.brushType];
     $('#b-size').value = sizeToSlider(b.size);
